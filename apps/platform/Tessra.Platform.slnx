@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Tessra.Platform.Api/Tessra.Platform.Api.csproj" />
+    <Project Path="src/Tessra.Platform.Domain/Tessra.Platform.Domain.csproj" />
+    <Project Path="src/Tessra.Platform.Observability/Tessra.Platform.Observability.csproj" />
+  </Folder>
+</Solution>

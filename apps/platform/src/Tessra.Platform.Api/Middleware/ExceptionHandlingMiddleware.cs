@@ -1,8 +1,15 @@
 using System.Diagnostics;
 using System.Net;
 using Serilog;
-using Tessra.Platform.Models;
+using Tessra.Platform.Domain.Models;
 
+namespace Tessra.Platform.Api.Middleware;
+
+/// <summary>
+/// Global exception handling middleware that catches unhandled exceptions,
+/// maps them to appropriate HTTP status codes, and returns a consistent
+/// JSON error response using the <see cref="ApiErrorResponse"/> contract.
+/// </summary>
 public class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;

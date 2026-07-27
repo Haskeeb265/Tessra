@@ -1,6 +1,6 @@
 @platform_HostAddress = http://localhost:5085
 
-GET {{platform_HostAddress}}/weatherforecast/
+GET {{platform_HostAddress}}/health
 Accept: application/json
 
 ###
