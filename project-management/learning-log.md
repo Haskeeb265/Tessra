@@ -1,6 +1,6 @@
 # Tessra — Learning Log
 
-> Last updated: 2026-07-27 (end of Session 1)
+> Last updated: 2026-07-27 (end of Session 7)
 > 
 > Only concepts that have been **explained and discussed** with the user are listed here.
 > Concepts from the initial (reverted) implementation are excluded until they are
@@ -18,6 +18,7 @@
 | **Switch expressions** | `ExceptionHandlingMiddleware.MapException()` uses pattern matching `exception switch` | 2026-07-27 |
 | **Tuple return types** | `MapException` returns `(int StatusCode, string Message, LogEventLevel)` | 2026-07-27 |
 | **Nullable annotations** | `string? Details` in `ApiErrorResponse` — the `?` marks it as nullable | 2026-07-27 |
+| **Records for DTOs** | `RegisterRequest`, `TokenResponse` — immutable data transfer objects with positional syntax | 2026-07-27 |
 
 ## .NET Concepts
 
@@ -38,17 +39,36 @@
 | **.slnx format** | New XML-based solution file format in .NET 10 (replaces .sln) | 2026-07-27 |
 | **ITenantInfo** | Interface for tenant data — `Id` (internal key) vs `Identifier` (lookup key) vs `Name` | 2026-07-27 |
 | **[MultiTenant] attribute** | Marks an entity for automatic tenant isolation — auto-sets TenantId and adds global query filter | 2026-07-27 |
-
-### Upcoming (will be covered in Steps 4-6)
-| Concept | Expected In |
-|---------|-------------|
-| `MultiTenantDbContext` | Step 4 |
-| `IMultiTenantContextAccessor` | Step 4 |
-| `entity.IsMultiTenant()` fluent API | Step 4 |
-| `AddMultiTenant<T>()` service registration | Step 5 |
-| Header strategy, in-memory store | Step 5 |
-| `UseMultiTenant()` middleware | Step 5 |
-| Global query filters at runtime | Step 6 |
+| **DbContextOptions<T>** | `AppDbContext.cs` — standard EF Core config (provider, connection string) | 2026-07-27 |
+| **DbSet<T>** | `AppDbContext.cs` — property representing a database table for LINQ queries | 2026-07-27 |
+| **OnModelCreating** | `AppDbContext.cs` — called once at startup to define database schema via fluent API | 2026-07-27 |
+| **Fluent API** | `AppDbContext.cs` — chaining methods like `.HasKey()`, `.IsRequired()`, `.HasMaxLength()` | 2026-07-27 |
+| **Global query filters** | `entity.IsMultiTenant()` — automatic `WHERE TenantId = @current` on every query | 2026-07-27 |
+| **AddMultiTenant<T>() service registration** | `Program.cs` — registers Finbuckle core services | 2026-07-27 |
+| **Header strategy** | `.WithHeaderStrategy("X-Tenant-Id")` — resolves tenant from HTTP header | 2026-07-27 |
+| **In-memory store** | `.WithInMemoryStore(...)` — seeds tenants in memory for dev/testing | 2026-07-27 |
+| **UseMultiTenant() middleware** | `Program.cs` — reads header, resolves tenant, sets `IMultiTenantContext` per-request | 2026-07-27 |
+| **EnforceMultiTenant** | Auto-sets `TenantId` to current tenant on save when null; throws if mismatch | 2026-07-27 |
+| **IMultiTenantContextAccessor** | Singleton using `AsyncLocal<T>` — flows tenant context per-request | 2026-07-27 |
+| **InMemory database provider** | `UseInMemoryDatabase("TessraPlatformDb")` — ephemeral, in-process RAM storage | 2026-07-27 |
+| **MapGroup()** | `app.MapGroup("/widgets")` — groups routes under a common prefix | 2026-07-27 |
+| **Extension methods for endpoint organization** | Static extension method on `WebApplication` to keep Program.cs clean | 2026-07-27 |
+| **Route constraint `{id:guid}`** | Restricts route parameter to valid GUIDs | 2026-07-27 |
+| **REST conventions** | `201 Created` for POST, `204 No Content` for DELETE, `404 NotFound` for missing resources | 2026-07-27 |
+| **JWT (JSON Web Token)** | `AuthService.cs` — stateless auth token with header, payload (claims), and signature | 2026-07-27 |
+| **JWT claims** | `sub`, `email`, `tenant_id`, `tenant_identifier`, `jti`, `iat` — key-value pairs in token payload | 2026-07-27 |
+| **Symmetric signing (HMAC-SHA256)** | `AuthService.cs` — same key signs and verifies tokens (dev only; use asymmetric for production) | 2026-07-27 |
+| **AddAuthentication / AddJwtBearer** | `Program.cs` — registers JWT bearer as the default auth scheme | 2026-07-27 |
+| **TokenValidationParameters** | `Program.cs` — configures issuer, audience, lifetime, signing key validation | 2026-07-27 |
+| **UseAuthentication / UseAuthorization** | `Program.cs` — middleware that validates tokens and enforces policies | 2026-07-27 |
+| **RequireAuthorization()** | `WidgetEndpoints.cs` — protects route group, returns 401 if no valid token | 2026-07-27 |
+| **BCrypt password hashing** | `AuthService.cs` — one-way hashing with automatic salting, computationally expensive | 2026-07-27 |
+| **RandomNumberGenerator** | `AuthService.cs` — cryptographically secure random bytes for refresh tokens | 2026-07-27 |
+| **IDesignTimeDbContextFactory<T>** | `AppDbContextFactory.cs` — tells EF Core tools how to create DbContext for migrations | 2026-07-27 |
+| **Migrate() vs EnsureCreated()** | `Program.cs` — versioned vs. one-shot schema creation | 2026-07-27 |
+| **IsRelational()** | `Program.cs` — checks if the database provider is relational (safe for InMemory) | 2026-07-27 |
+| **Middleware pipeline order** | `Program.cs` — Exception → Logging → TenantValidation → MultiTenant → AuthN → AuthZ → Endpoints | 2026-07-27 |
+| **Clock skew** | `Program.cs` — `ClockSkew = TimeSpan.Zero` eliminates the default 5-minute token window | 2026-07-27 |
 
 ## OOP Concepts
 
@@ -59,6 +79,11 @@
 | **Single Responsibility** | Each middleware does one thing (exception handling OR request logging, not both) | 2026-07-27 |
 | **Constructor Injection** | Dependencies passed via constructor rather than created internally | 2026-07-27 |
 | **Interfaces** | `ITenantInfo` — a contract that `Tenant` must fulfill (Id, Identifier, Name, ConnectionString) | 2026-07-27 |
+| **Inheritance** | `AppDbContext : MultiTenantDbContext` — child class inherits/reuses base class behavior | 2026-07-27 |
+| **Constructor Chaining** | `: base(...)` — child constructor passes arguments to parent constructor | 2026-07-27 |
+| **Service Layer Pattern** | `AuthService` — encapsulates business logic (auth), keeps endpoints thin | 2026-07-27 |
+| **Factory Pattern** | `AppDbContextFactory` — creates DbContext instances for EF Core tooling | 2026-07-27 |
+| **Result Object Pattern** | `AuthResult` — standardised success/failure response with properties | 2026-07-27 |
 
 ## Libraries Introduced
 | Library | Version | Purpose | Date |
@@ -70,3 +95,8 @@
 | `Finbuckle.MultiTenant.AspNetCore` | 10.1.2 | ASP.NET Core integration (middleware, strategies) | 2026-07-27 |
 | `Finbuckle.MultiTenant.EntityFrameworkCore` | 10.1.2 | EF Core integration (MultiTenantDbContext) | 2026-07-27 |
 | `Finbuckle.MultiTenant.Abstractions` | 10.1.2 | Interfaces and attributes (ITenantInfo, [MultiTenant]) | 2026-07-27 |
+| `Microsoft.EntityFrameworkCore.InMemory` | 10.0.10 | InMemory database provider (dev/testing) | 2026-07-27 |
+| `Npgsql.EntityFrameworkCore.PostgreSQL` | 10.0.0 | PostgreSQL EF Core provider | 2026-07-27 |
+| `Microsoft.EntityFrameworkCore.Design` | 10.0.10 | EF Core CLI tools support (migrations) | 2026-07-27 |
+| `BCrypt.Net-Next` | 4.0.3 | BCrypt password hashing | 2026-07-27 |
+| `Microsoft.AspNetCore.Authentication.JwtBearer` | 10.0.10 | JWT bearer token authentication | 2026-07-27 |

@@ -1,0 +1,26 @@
+# Build artifacts
+**/bin/
+**/obj/
+
+# IDE and editor files
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.suo
+**/*.user
+**/*.sln.docstates
+
+# Git
+.git/
+.gitignore
+
+# Project management (not needed in Docker)
+project-management/
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+
+# Logs
+**/*.log
+**/logs/
