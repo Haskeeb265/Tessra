@@ -1,6 +1,6 @@
 # Tessra — Learning Log
 
-> Last updated: 2026-07-27 (end of Session 7)
+> Last updated: 2026-07-28 (end of Session 8)
 > 
 > Only concepts that have been **explained and discussed** with the user are listed here.
 > Concepts from the initial (reverted) implementation are excluded until they are
@@ -62,6 +62,13 @@
 | **TokenValidationParameters** | `Program.cs` — configures issuer, audience, lifetime, signing key validation | 2026-07-27 |
 | **UseAuthentication / UseAuthorization** | `Program.cs` — middleware that validates tokens and enforces policies | 2026-07-27 |
 | **RequireAuthorization()** | `WidgetEndpoints.cs` — protects route group, returns 401 if no valid token | 2026-07-27 |
+| **ClaimTypes.Role** | `AuthService.cs` — standard JWT claim type for role-based authorization | 2026-07-28 |
+| **Authorization policies** | `Program.cs` — named policies (e.g., `"AdminOnly"`) that encapsulate authorization rules | 2026-07-28 |
+| **Seed data / bootstrapping** | `Program.cs` — creating initial admin users on startup to solve chicken-and-egg problem | 2026-07-28 |
+| **Raw SQL for seed (ExecuteSqlRawAsync)** | `Program.cs` — bypasses EF Core tracking + EnforceMultiTenant during startup when no HTTP context exists | 2026-07-28 |
+| **IgnoreQueryFilters()** | `Program.cs` — bypasses global query filters when checking for existing users during startup | 2026-07-28 |
+| **Tenant claim validation** | `TenantClaimValidationMiddleware` — comparing JWT `tenant_identifier` claim against `X-Tenant-Id` header to prevent cross-tenant token reuse | 2026-07-28 |
+| **FirstOrDefaultAsync vs FindAsync** | `WidgetEndpoints.cs`, `AuthService.cs` — `FindAsync` bypasses global query filters; `FirstOrDefaultAsync` respects them | 2026-07-28 |
 | **BCrypt password hashing** | `AuthService.cs` — one-way hashing with automatic salting, computationally expensive | 2026-07-27 |
 | **RandomNumberGenerator** | `AuthService.cs` — cryptographically secure random bytes for refresh tokens | 2026-07-27 |
 | **IDesignTimeDbContextFactory<T>** | `AppDbContextFactory.cs` — tells EF Core tools how to create DbContext for migrations | 2026-07-27 |
@@ -84,6 +91,8 @@
 | **Service Layer Pattern** | `AuthService` — encapsulates business logic (auth), keeps endpoints thin | 2026-07-27 |
 | **Factory Pattern** | `AppDbContextFactory` — creates DbContext instances for EF Core tooling | 2026-07-27 |
 | **Result Object Pattern** | `AuthResult` — standardised success/failure response with properties | 2026-07-27 |
+| **Static factory methods** | `AuthResult.SuccessMessage()` — clean object creation with descriptive method names | 2026-07-28 |
+| **Static constants class** | `Roles` — grouping related constants in a dedicated static class for type-safety | 2026-07-28 |
 
 ## Libraries Introduced
 | Library | Version | Purpose | Date |

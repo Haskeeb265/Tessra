@@ -68,7 +68,11 @@ try
         };
     });
 
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("AdminOnly", policy =>
+            policy.RequireRole(Roles.Admin));
+    });
 
     // Register application services
     builder.Services.AddHttpContextAccessor();
@@ -96,6 +100,13 @@ try
     app.UseMultiTenant();
 
     app.UseAuthentication();
+
+    // Validate that the JWT's tenant_id claim matches the X-Tenant-Id header.
+    // This must run AFTER UseAuthentication() (so the JWT is decoded) and
+    // BEFORE UseAuthorization() (so unauthorized + tenant-mismatch have
+    // distinct error codes: 401 vs 403).
+    app.UseMiddleware<TenantClaimValidationMiddleware>();
+
     app.UseAuthorization();
 
     app.MapGet("/health", () =>
@@ -105,16 +116,51 @@ try
     .WithName("HealthCheck");
 
     app.MapWidgetEndpoints();
-    app.MapAuthEndpoints();
-
-    // Auto-apply pending migrations on startup for relational databases
+    app.MapAuthEndpoints();        // Auto-apply pending migrations on startup for relational databases
     // (PostgreSQL). InMemory doesn't support migrations, so we skip it.
+    //
+    // For PostgreSQL, we also seed an admin user for every configured tenant
+    // using raw SQL. We use SQL instead of EF Core because Finbuckle's
+    // EnforceMultiTenant requires a TenantInfo context that doesn't exist
+    // during startup (no HTTP request). Raw SQL bypasses the EF Core
+    // change tracker and EnforceMultiTenant entirely.
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         if (db.Database.IsRelational())
         {
             db.Database.Migrate();
+
+            // Check across all tenants (bypassing the Finbuckle filter which
+            // requires a tenant context that doesn't exist during startup).
+            if (!await db.Users.IgnoreQueryFilters().AnyAsync())
+            {
+                var seedSection = app.Configuration.GetSection("SeedAdmin");
+                var seedEmail = seedSection["Email"]!;
+                var seedPassword = seedSection["Password"]!;
+
+                var passwordHash = BCrypt.Net.BCrypt.HashPassword(seedPassword);
+                var tenantIds = new[] { "alpha", "beta" };
+
+                foreach (var tenantId in tenantIds)
+                {
+                    await db.Database.ExecuteSqlRawAsync(
+                        """
+                        INSERT INTO "Users" ("Id", "Email", "PasswordHash", "Role", "TenantId", "CreatedAt")
+                        VALUES ({0}, {1}, {2}, {3}, {4}, {5})
+                        """,
+                        Guid.NewGuid(),
+                        seedEmail,
+                        passwordHash,
+                        Roles.Admin,
+                        tenantId,
+                        DateTime.UtcNow);
+                }
+
+                Log.Information(
+                    "Seeded admin user ({Email}) for {TenantCount} tenant(s) via raw SQL",
+                    seedEmail, tenantIds.Length);
+            }
         }
     }
 

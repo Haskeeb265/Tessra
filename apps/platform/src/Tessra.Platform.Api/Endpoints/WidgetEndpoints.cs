@@ -24,7 +24,8 @@ public static class WidgetEndpoints
                 "/{id:guid}",
                 async (Guid id, AppDbContext db) =>
                 {
-                    var widget = await db.Widgets.FindAsync(id);
+                    var widget = await db.Widgets
+                        .FirstOrDefaultAsync(w => w.Id == id);
 
                     return widget is null
                         ? Results.NotFound()
@@ -47,7 +48,8 @@ public static class WidgetEndpoints
                 "/{id:guid}",
                 async (Guid id, Widget updatedWidget, AppDbContext db) =>
                 {
-                    var widget = await db.Widgets.FindAsync(id);
+                    var widget = await db.Widgets
+                        .FirstOrDefaultAsync(w => w.Id == id);
 
                     if (widget is null)
                     {
@@ -67,7 +69,8 @@ public static class WidgetEndpoints
                 "/{id:guid}",
                 async (Guid id, AppDbContext db) =>
                 {
-                    var widget = await db.Widgets.FindAsync(id);
+                    var widget = await db.Widgets
+                        .FirstOrDefaultAsync(w => w.Id == id);
 
                     if (widget is null)
                     {
@@ -79,6 +82,7 @@ public static class WidgetEndpoints
 
                     return Results.NoContent();
                 })
-            .WithName("DeleteWidget");
+            .WithName("DeleteWidget")
+            .RequireAuthorization("AdminOnly");
     }
 }

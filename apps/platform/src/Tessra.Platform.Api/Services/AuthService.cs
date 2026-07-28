@@ -81,7 +81,8 @@ public class AuthService
         storedToken.IsRevoked = true;
 
         // Load the user and generate new tokens
-        var user = await _db.Users.FindAsync(storedToken.UserId);
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.Id == storedToken.UserId);
         if (user is null)
         {
             return AuthResult.Failure("User not found.");
@@ -89,6 +90,28 @@ public class AuthService
 
         await _db.SaveChangesAsync();
         return await GenerateAuthResultAsync(user);
+    }
+
+    // ─── Promote to Admin ───────────────────────────────────────
+
+    public async Task<AuthResult> PromoteToAdminAsync(string email)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+        if (user is null)
+        {
+            return AuthResult.Failure("User not found.");
+        }
+
+        if (user.Role == Roles.Admin)
+        {
+            return AuthResult.Failure("User is already an admin.");
+        }
+
+        user.Role = Roles.Admin;
+        await _db.SaveChangesAsync();
+
+        return AuthResult.SuccessMessage("User promoted to Admin successfully.");
     }
 
     // ─── Token Generation ───────────────────────────────────────
@@ -120,6 +143,7 @@ public class AuthService
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new Claim(JwtRegisteredClaimNames.Email, user.Email),
+            new Claim(ClaimTypes.Role, user.Role),
             new Claim("tenant_id", tenantId ?? ""),
             new Claim("tenant_identifier", tenantIdentifier ?? ""),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
@@ -179,6 +203,7 @@ public class AuthResult
     public bool IsSuccess { get; private init; }
     public string? AccessToken { get; private init; }
     public string? RefreshToken { get; private init; }
+    public string? Message { get; private init; }
     public string? ErrorMessage { get; private init; }
 
     public static AuthResult Success(string accessToken, string refreshToken) => new()
@@ -186,6 +211,12 @@ public class AuthResult
         IsSuccess = true,
         AccessToken = accessToken,
         RefreshToken = refreshToken
+    };
+
+    public static AuthResult SuccessMessage(string message) => new()
+    {
+        IsSuccess = true,
+        Message = message
     };
 
     public static AuthResult Failure(string message) => new()

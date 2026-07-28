@@ -27,7 +27,7 @@ A multi-tenant SaaS infrastructure platform that provides shared services (authe
 - [x] User registration / login
 - [x] JWT token issuance (access + refresh tokens)
 - [x] Tenant context in JWT claims (`tenant_id`, `tenant_identifier`)
-- [ ] Role-based access control (Admin vs regular user)
+- [x] Role-based access control (Admin vs regular user)
 
 ### Phase 4: Observability
 - [ ] Structured logging conventions

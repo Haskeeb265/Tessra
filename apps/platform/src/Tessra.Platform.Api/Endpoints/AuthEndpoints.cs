@@ -46,6 +46,19 @@ public static class AuthEndpoints
                 : Results.BadRequest(new { error = result.ErrorMessage });
         })
         .WithName("Refresh");
+
+        group.MapPost("/promote", async (
+            PromoteRequest request,
+            AuthService authService) =>
+        {
+            var result = await authService.PromoteToAdminAsync(request.Email);
+
+            return result.IsSuccess
+                ? Results.Ok(new { message = result.Message })
+                : Results.BadRequest(new { error = result.ErrorMessage });
+        })
+        .WithName("PromoteToAdmin")
+        .RequireAuthorization("AdminOnly");
     }
 }
 
@@ -54,4 +67,5 @@ public static class AuthEndpoints
 public record RegisterRequest(string Email, string Password);
 public record LoginRequest(string Email, string Password);
 public record RefreshRequest(string RefreshToken);
+public record PromoteRequest(string Email);
 public record TokenResponse(string AccessToken, string RefreshToken);
