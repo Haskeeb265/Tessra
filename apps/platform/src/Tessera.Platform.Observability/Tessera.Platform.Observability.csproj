@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Directory.Build.props provides TargetFramework, Nullable, ImplicitUsings -->
+
+  <PropertyGroup>
+    <AssemblyName>Tessera.Platform.Observability</AssemblyName>
+    <RootNamespace>Tessera.Platform.Observability</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    FrameworkReference to Microsoft.AspNetCore.App gives us access to ASP.NET Core
+    types like HttpContext and RequestDelegate without pulling in the full web SDK.
+    This is the standard way for class libraries that need ASP.NET Core primitives.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="4.2.0" />
+  </ItemGroup>
+
+</Project>

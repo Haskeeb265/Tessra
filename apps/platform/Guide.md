@@ -1,231 +1,185 @@
-# Tessra — Platform Service Guide
+# Tessera — Platform Service Guide (operations)
 
 ## Purpose
 
-This is the **C# platform / core services layer** for Tessra — a multi-tenant SaaS infrastructure service. It provides shared cross-cutting concerns that every tenant-facing request flows through:
+This is the **operational guide** for the C# platform service (`apps/platform`):
+how to run it, test it, and what commands to use.
 
-- **Authentication** — who is this user?
-- **Authorization** — what are they allowed to do?
-- **Billing** — what plan are they on, what entitlements do they have?
-- **Observability** — logging, monitoring, metrics
-- **Rate Limiting** — protect against abuse
+> 📐 **For how the system works** — the data model, middleware pipeline, auth
+> flows, tenant isolation, API surface, user flows, and design decisions — read
+> **[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)**. It is the single
+> source of truth. This file deliberately does **not** duplicate it.
 
-The Python MCP server and Next.js frontend are **consumers** of these services, not owners of them.
-
----
-
-## Current State (2026-07-28)
-
-### ✅ Implemented
-
-**Infrastructure:**
-- **Serilog structured logging** configured on startup (`Program.cs`)
-- **`ExceptionHandlingMiddleware`** — global exception handler mapping exceptions to proper HTTP status codes with consistent JSON error responses
-- **`RequestLoggingMiddleware`** — logs HTTP method, path, status code, and duration for every request
-- **`TenantValidationMiddleware`** — validates `X-Tenant-Id` header, returns 400 if missing (excludes `/health`, `/openapi`)
-- **`TenantClaimValidationMiddleware`** — validates JWT `tenant_identifier` claim matches `X-Tenant-Id` header, returns 403 on mismatch
-- **`ApiErrorResponse`** model — standardised error shape: status code, message, optional details, trace ID, timestamp
-- **`GET /health`** — returns `{ status: "healthy", timestamp }` (no tenant header or auth required)
-- **OpenAPI support** — enabled in development mode
-
-**Multi-Tenancy (Finbuckle):**
-- **Finbuckle Multi-Tenant** with header strategy (`X-Tenant-Id`)
-- **2 seeded tenants**: Alpha Corp (`alpha-corp`), Beta Industries (`beta-industries`)
-- **`AppDbContext`** — inherits `MultiTenantDbContext` with `DbSet<Widget>`, `DbSet<User>`, `DbSet<RefreshToken>`
-- **Full Widget CRUD** with tenant isolation via `entity.IsMultiTenant()`
-- **Tenant-scoped global query filters** on ALL entities — no accidental cross-tenant data leaks
-- **All DB queries use `FirstOrDefaultAsync`** (not `FindAsync`) to respect query filters
-- **Seed admin via raw SQL** — bypasses `EnforceMultiTenant` during startup
-- **In-memory tenant store** (for development)
-
-**Authentication & Authorization:**
-- **`POST /auth/register`** — creates user with BCrypt-hashed password, returns access + refresh token pair
-- **`POST /auth/login`** — verifies credentials, returns token pair
-- **`POST /auth/refresh`** — exchanges refresh token for new token pair
-- **`POST /auth/promote`** — admin-only endpoint to promote a user to Admin role
-- **JWT access tokens** (15min expiry) with `sub`, `email`, `tenant_id`, `tenant_identifier`, `role` claims
-- **Refresh tokens** (7-day expiry, 64-byte crypto-random, stored in database)
-- **Cross-tenant token reuse blocked** (403 Forbidden)
-- **RBAC**: `Admin` / `User` roles, `AdminOnly` authorization policy
-- **DELETE widget requires `AdminOnly`** policy
-- **All widget endpoints protected** via `.RequireAuthorization()`
-
-**Middleware pipeline (in order):**
-```
-Exception → Logging → TenantValidation → MultiTenant → Authentication → TenantClaimValidation → Authorization → Endpoints
-```
-
-**Docker & Database:**
-- **Docker Compose** with .NET 10 API + PostgreSQL 16
-- **Multi-stage Dockerfile** with layer caching and non-root user
-- **EF Core Migrations** — `InitialCreate` (Widgets) + `AddAuthTables` (Users, RefreshTokens) + `AddUserRole` (Role column)
-- **Dual-provider support**: PostgreSQL via Docker, InMemory fallback for local dev
-- **Migration on startup** with `IsRelational()` guard for InMemory safety
-
-**Project Structure:**
-- **Multi-project solution**: `Tessra.Platform.slnx`
-- **`Tessra.Platform.Api`** — ASP.NET Core host (entry point, configuration, pipeline, data, services, endpoints)
-- **`Tessra.Platform.Domain`** — shared domain models (`ApiErrorResponse`, `Tenant`, `Widget`, `User`, `RefreshToken`)
-- **`Tessra.Platform.Observability`** — logging middleware (`RequestLoggingMiddleware`)
-- **`Directory.Build.props`** at repo root for shared MSBuild properties
-- **`/project-management/`** — roadmap, tasks, decisions, learning log, progress
+The platform service owns the cross-cutting concerns every tenant-facing request
+flows through: authentication, authorization, multi-tenancy, roles & actions.
+The Next.js frontends (`apps/web`, `apps/platform-portal`) and the future Python
+MCP server are **consumers** of these services, not owners.
 
 ---
 
-### 📋 Running the API
+## Quick start (Docker — the canonical setup)
 
-**With Docker (recommended):**
+1. Start the API + PostgreSQL:
+
+   ```bash
+   cd apps/platform
+   docker compose up -d --build
+   ```
+
+2. Start the two portals (two terminals):
+
+   ```bash
+   cd apps/web && npm run dev            # business portal → http://localhost:3000
+   cd apps/platform-portal && npm run dev  # platform portal → http://localhost:3001
+   ```
+
+3. Both portals read `NEXT_PUBLIC_API_URL` from their `.env.local` (currently
+   `http://localhost:5000`, the Docker API). If you run the API elsewhere,
+   update those files.
+
+## Local dev without Docker (InMemory fallback)
+
 ```bash
 cd apps/platform
-docker compose up -d --build
-# API at http://localhost:5000
+dotnet run --project src/Tessera.Platform.Api   # → http://localhost:5085
 ```
 
-**Without Docker (local dev):**
+With no connection string, the API uses the **in-memory database**:
+
+- Data is **ephemeral** — it resets on every restart.
+- There is **no seeded tenant admin** (`admin@tessera.com` is Postgres-only) —
+  register an account instead; the **first user in a workspace becomes its Admin**.
+- `superadmin@tessera.com` *is* seeded on both providers.
+
+---
+
+## Services & ports
+
+| Service | Port | Notes |
+|---|---|---|
+| API (Docker) | `5000` | `platform-api-1`, PostgreSQL-backed, migrations run on startup |
+| API (local `dotnet run`) | `5085` | InMemory fallback |
+| PostgreSQL | `5432` | `platform-db-1`, db `tessera_platform`, `pgdata` volume persists |
+| Business portal | `3000` | `apps/web` |
+| Platform portal | `3001` | `apps/platform-portal` |
+
+---
+
+## Accounts
+
+| Account | Password | Where it exists |
+|---|---|---|
+| `superadmin@tessera.com` | `Admin123!` | Platform portal — seeded on **both** providers |
+| `admin@tessera.com` | `Admin123!` | Business portal tenant admin (Alpha + Beta) — seeded **PostgreSQL only** |
+
+---
+
+## Testing the API (curl)
+
 ```bash
+API=http://localhost:5000
+
+# 1. Health + public tenant list
+curl $API/health
+curl $API/tenants
+
+# 2. Superadmin login (platform portal auth)
+SA=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"email":"superadmin@tessera.com","password":"Admin123!"}' $API/admin/auth/login)
+SA_TOKEN=$(echo "$SA" | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
+
+# 3. Superadmin: create an envelope, then a tenant assigned to it
+curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"name":"Pro","roles":[{"name":"Admin","actions":["create_mcp","add_tools","manage_users"]},{"name":"Editor","actions":["create_widget","edit_widget"]}]}' \
+  $API/admin/envelopes
+curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"identifier":"gamma-corp","name":"Gamma Corp","envelopeId":"<envelope-id>"}' \
+  $API/admin/tenants
+
+# 4. Tenant user: register (first user of gamma-corp becomes its Admin)
+TOK=$(curl -s -X POST -H "Content-Type: application/json" -H "X-Tenant-Id: gamma-corp" \
+  -d '{"email":"gina@gamma.com","password":"Password123!"}' $API/auth/register \
+  | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
+
+# 5. Tenant endpoints
+curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/me
+curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/envelope
+curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/users
+
+# 6. Widgets (placeholder demo resource — see ARCHITECTURE.md §3)
+curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/widgets
+
+# 7. Cross-tenant token reuse → 403
+curl -o /dev/null -w "%{http_code}\n" \
+  -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: alpha-corp" $API/widgets
+# → 403 (token's tenant_identifier ≠ header)
+```
+
+The full endpoint table (every route + its auth requirement) is in
+`docs/ARCHITECTURE.md` §7.
+
+---
+
+## Testing the portals
+
+**Business portal** (`http://localhost:3000`):
+1. Log in as `admin@tessera.com` (workspace **Alpha Corp**) — you're the workspace Admin.
+2. Create/edit widgets on the dashboard; note the "your role allows" action pills.
+3. Open **Team** → add a user with a role from the workspace's envelope, change roles, remove a user.
+4. Register a second account in a different workspace (e.g. Beta Industries) and confirm you can't see Alpha's widgets.
+
+**Platform portal** (`http://localhost:3001`):
+1. Log in as `superadmin@tessera.com`.
+2. **Envelopes** → create one with roles + actions.
+3. **Tenants** → create a tenant, assign the envelope; edit/delete.
+
+---
+
+## Build & verify commands
+
+```bash
+# C# platform
 cd apps/platform
-dotnet run --project src/Tessra.Platform.Api
-# API at http://localhost:5085 (uses InMemory database)
-```
+dotnet build                                          # build all 3 projects
+dotnet ef migrations add <Name> --project src/Tessera.Platform.Api   # new migration
+dotnet run --project src/Tessera.Platform.Api        # local InMemory dev
 
-### 📋 Testing the Full Auth + RBAC Flow
-
-```bash
-# 1. Register a user
-curl -X POST -H "Content-Type: application/json" \
-  -H "X-Tenant-Id: alpha-corp" \
-  -d '{"email":"alice@test.com","password":"Password123!"}' \
-  http://localhost:5000/auth/register
-
-# 2. Login as seed admin (PostgreSQL only)
-curl -X POST -H "Content-Type: application/json" \
-  -H "X-Tenant-Id: alpha-corp" \
-  -d '{"email":"admin@tessra.com","password":"Admin123!"}' \
-  http://localhost:5000/auth/login
-
-# 3. Access protected widgets with the token
-curl -H "Authorization: Bearer <adminToken>" \
-  -H "X-Tenant-Id: alpha-corp" \
-  http://localhost:5000/widgets
-
-# 4. Promote a user to Admin (admin-only)
-curl -X POST -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <adminToken>" \
-  -H "X-Tenant-Id: alpha-corp" \
-  -d '{"email":"alice@test.com"}' \
-  http://localhost:5000/auth/promote
-
-# 5. Cross-tenant token test (should return 403)
-curl -H "Authorization: Bearer <alphaToken>" \
-  -H "X-Tenant-Id: beta-industries" \
-  http://localhost:5000/widgets
+# Frontends (each app)
+cd apps/web && npm run build && npm run lint
+cd apps/platform-portal && npm run build && npm run lint
 ```
 
 ---
 
-## Project Structure
+## Where things live (details in ARCHITECTURE.md)
 
-```
-apps/platform/
-├── Dockerfile                        ← Multi-stage .NET 10 build
-├── docker-compose.yml                ← API + PostgreSQL 16
-├── Tessra.Platform.slnx              ← Solution file
-├── Guide.md
-└── src/
-    ├── Tessra.Platform.Api/          ← ASP.NET Core host
-    │   ├── Data/
-    │   │   ├── AppDbContext.cs
-    │   │   └── AppDbContextFactory.cs
-    │   ├── Endpoints/
-    │   │   ├── WidgetEndpoints.cs     ← CRUD: GET/POST/PUT/DELETE /widgets
-    │   │   └── AuthEndpoints.cs       ← Auth: register|login|refresh|promote
-    │   ├── Middleware/
-    │   │   ├── ExceptionHandlingMiddleware.cs
-    │   │   ├── TenantValidationMiddleware.cs
-    │   │   └── TenantClaimValidationMiddleware.cs  ← NEW
-    │   ├── Services/
-    │   │   └── AuthService.cs
-    │   ├── Migrations/
-    │   │   ├── *_InitialCreate.cs
-    │   │   ├── *_AddAuthTables.cs
-    │   │   ├── *_AddUserRole.cs                    ← NEW
-    │   │   └── AppDbContextModelSnapshot.cs
-    │   ├── Program.cs
-    │   ├── appsettings.json
-    │   ├── appsettings.Development.json
-    │   ├── appsettings.Docker.json
-    │   ├── Tessra.Platform.Api.csproj
-    │   └── Properties/launchSettings.json
-    ├── Tessra.Platform.Domain/
-    │   └── Models/
-    │       ├── ApiErrorResponse.cs
-    │       ├── Tenant.cs
-    │       ├── Widget.cs
-    │       ├── User.cs
-    │       └── RefreshToken.cs
-    └── Tessra.Platform.Observability/
-        └── Middleware/RequestLoggingMiddleware.cs
-```
-
-### Project Management
-
-All roadmap, tasks, decisions, learning log, and progress are tracked in:
-```
-/project-management/
-├── roadmap.md
-├── tasks.md
-├── decisions.md
-├── learning-log.md
-└── progress.md
-```
-
-Updated after meaningful progress.
+| Concern | Location |
+|---|---|
+| Endpoints (widgets / auth / tenant / admin) | `src/Tessera.Platform.Api/Endpoints/` |
+| Middleware (exception / tenant validation / tenant-claim) | `src/Tessera.Platform.Api/Middleware/` |
+| Services (AuthService, AdminAuthService) | `src/Tessera.Platform.Api/Services/` |
+| Data (AppDbContext, DbTenantStore, migrations) | `src/Tessera.Platform.Api/Data/` |
+| Domain models + constants | `src/Tessera.Platform.Domain/Models/` |
+| Shared middleware | `src/Tessera.Platform.Observability/` |
+| Wiring / pipeline / seeding | `src/Tessera.Platform.Api/Program.cs` |
+| Config | `appsettings.json` (+ `.Development`, `.Docker`) |
 
 ---
 
-## Architecture
+## Project management
 
-### Service Architecture
-```
-[SMB User] → [Next.js UI]
-                        ↘
-                         [C# Platform API]  ← Auth, Multi-Tenant, RBAC
-                        ↙
-[ChatGPT / Claude / Gemini] → [MCP Server] → [Company A Database]
-                                                [Company B Database]
-```
-
-The C# platform is the identity and tenant gateway. It authenticates users, resolves which SMB tenant they belong to, validates they're not crossing tenants, and forwards the tenant context downstream to the MCP server. The MCP server uses this tenant identity to connect to the correct company database.
-
-### Middleware Pipeline
-```
-1. ExceptionHandlingMiddleware     ← Catches all unhandled exceptions
-2. RequestLoggingMiddleware        ← Logs method, path, status, duration
-3. TenantValidationMiddleware      ← Returns 400 if X-Tenant-Id missing
-4. UseMultiTenant()                ← Resolves tenant from header
-5. UseAuthentication()             ← Validates JWT
-6. TenantClaimValidationMiddleware ← Returns 403 if JWT tenant ≠ header tenant
-7. UseAuthorization()              ← Enforces role policies
-8. Endpoints                       ← Business logic
-```
-
-## Design Patterns
-
-### Endpoints Pattern
-
-To add a new resource:
-1. Create `Endpoints/YourResourceEndpoints.cs`
-2. Create a static class with `public static void MapYourResourceEndpoints(this WebApplication app)`
-3. Use `app.MapGroup("/your-resource")` to group routes under a common prefix
-4. Add `.RequireAuthorization()` if the resource should be protected
-5. Call `app.MapYourResourceEndpoints();` in `Program.cs`
-
-### Service Layer Pattern
-
-Business logic lives in `Services/` classes (e.g., `AuthService.cs`). Endpoints remain thin — they validate input, call the service, and format the response. Services receive their dependencies via constructor injection.
+Roadmap, tasks, decisions, learning log, and progress live in
+`/project-management/` (updated after meaningful progress).
 
 ---
 
-## Learning-First Approach
+## Development conventions (short version)
 
-Every feature we build is also a learning opportunity. New C# syntax, .NET concepts, OOP principles, and design patterns will be explained as we go. See `project-management/learning-log.md` for what we've covered so far.
+- **Endpoints**: static extension classes (`Map<Resource>Endpoints`) grouping
+  routes under `MapGroup("/<resource>")`, `.RequireAuthorization()` where needed.
+- **Business logic**: in `Services/` classes (endpoints stay thin).
+- **Tenant-scoped queries**: always `FirstOrDefaultAsync`/`ToListAsync` — never
+  `FindAsync` (it bypasses Finbuckle's global query filters).
+- **Errors**: throw or return `Results.*`; the global exception middleware
+  shapes every failure into `ApiErrorResponse` (see ARCHITECTURE.md §11).
+- New resources / middleware ordering / gotchas: see `docs/ARCHITECTURE.md`.

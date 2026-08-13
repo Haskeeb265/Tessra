@@ -1,6 +1,8 @@
-# Tessra — Project Progress
+# Tessera — Project Progress
 
-> **Last updated**: 2026-07-28 (end of Session 8)
+> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
+
+> **Last updated**: 2026-08-13 (end of Session 10)
 > **Purpose**: Single source of truth for project state across sessions.
 > **How to use**: Start here every session. Read this file first, then open `tasks.md` for the checklist.
 
@@ -10,10 +12,10 @@
 
 | Item | Status |
 |------|--------|
-| **Current milestone** | Multi-Tenant Foundation ✅ Complete |
-| **Last completed step** | Full E2E verification: RBAC, cross-tenant token validation, FindAsync fix, PostgreSQL seed — 18/18 tests passing |
-| **Next step** | Choose next feature for the MCP server product |
-| **Build status** | ✅ Builds with 0 errors |
+| **Current milestone** | Two portals (business + superadmin) with envelopes/roles/actions ✅ |
+| **Last completed step** | Full stack: superadmin auth + tenant/envelope/user management APIs, platform portal (apps/platform-portal), business portal Team page |
+| **Next step** | Choose next feature (MCP server / action enforcement / Observability / CI pipeline)
+| **Build status** | ✅ Platform: `dotnet build` 0 errors · Web: `npm run build` + `npm run lint` pass |
 | **Docker status** | ✅ Up and running at `http://localhost:5000` with PostgreSQL |
 | **Blockers** | None |
 
@@ -43,12 +45,13 @@
 - ✅ Multi-tenant aware: same email works in different tenants
 - ✅ RBAC: `Admin` / `User` roles, `AdminOnly` policy, promote endpoint
 - ✅ Cross-tenant token reuse blocked (403)
-- ✅ Seed admin (`admin@tessra.com`) created via raw SQL on fresh PostgreSQL
+- ✅ Seed admin (`admin@tessera.com`) created via raw SQL on fresh PostgreSQL
 
 ### Project Structure
-- ✅ `Tessra.Platform.Api` — ASP.NET Core host
-- ✅ `Tessra.Platform.Domain` — shared models
-- ✅ `Tessra.Platform.Observability` — logging middleware
+- ✅ `Tessera.Platform.Api` — ASP.NET Core host
+- ✅ `Tessera.Platform.Domain` — shared models
+- ✅ `Tessera.Platform.Observability` — logging middleware
+- ✅ `apps/web` — Next.js frontend (register/login, tenant picker, dashboard)
 
 ---
 
@@ -108,6 +111,70 @@ Full test suite run against clean PostgreSQL database. All 18 tests passing:
 
 ---
 
+## 📋 What We Built This Session (Session 9)
+
+### Tessra → Tessera Rename
+
+- Renamed all project namespaces, projects, solution file, Docker assets, and docs from `Tessra` to `Tessera` (`apps/platform/src/Tessera.*`, `Tessera.Platform.slnx`, `dotnet run --project src/Tessera.Platform.Api`)
+- Renamed seed admin email to `admin@tessera.com`
+- Zero remaining `Tessra` references in the repo; `dotnet build` passes with 0 errors
+
+### Next.js Frontend (`apps/web`)
+
+**Goal:** A real user-facing client that exercises the platform API end-to-end.
+
+- **Landing page** (`/`) with a live API health badge
+- **Register / Login** (`/register`, `/login`) against `POST /auth/register` and `POST /auth/login`
+- **Workspace (tenant) picker** — sends the `X-Tenant-Id` header the platform requires (Alpha Corp / Beta Industries)
+- **Dashboard** (`/dashboard`) — tenant-scoped widget CRUD (`GET/POST/PUT/DELETE /widgets`)
+- JWT access tokens stored in localStorage, auto-refreshed on 401 via `POST /auth/refresh`
+- **Role-aware UI** — widget delete only shows for `Admin` users (role decoded from the JWT)
+- CORS policy (`WebApp`) added in the platform for `http://localhost:3000`
+- Stack: Next.js 16 (App Router) · TypeScript strict · Tailwind CSS v4
+- `npm run build` and `npm run lint` both pass
+
+---
+
+## 📋 What We Built This Session (Session 10)
+
+### Two-Portal Architecture
+
+**Goal:** separate the superadmin (platform) experience from the business (tenant) experience, and let roles/actions be defined once and reused across workspaces.
+
+- **`apps/platform-portal`** (port 3001) — superadmin portal: `superadmin@tessera.com` login, tenant management (create/edit/delete + envelope assignment), envelope management (roles + their actions)
+- **`apps/web`** extended as the **business portal** (port 3000) — added a Team page (admin-only user management with roles from the envelope) and role-aware display of allowed actions
+
+### Envelopes, Roles & Actions
+
+- **Envelope** = bundle of roles + their allowed actions, assigned by a superadmin to a tenant
+- **`AppRole`** = a role inside an envelope with a list of actions; **`ActionCatalog`** documents the capabilities (e.g. `create_mcp`, `add_tools`, `manage_users`)
+- **Actions are a catalog only for now** — they display in the UI but are NOT enforced (enforcement lands with the MCP feature, per decision)
+- Default **Standard** envelope seeded: `Admin`, `Manager`, `User` roles; superadmin can create more
+- **Tenant bootstrap**: the first user to register in an empty workspace becomes its `Admin`
+
+### Superadmin Auth & DB-Backed Tenants
+
+- **`AdminUser`** — platform-level account (no tenant); `POST /admin/auth/login` → `SuperAdmin` JWT (12h, no tenant claims)
+- **`SuperAdminOnly` policy** + `/admin` excluded from `TenantValidationMiddleware`
+- **`DbTenantStore`** — Finbuckle store backed by the database (replaces the hardcoded in-memory store) so tenants created by a superadmin resolve at runtime
+- Platform data (tenants, envelopes, superadmin) seeds on both InMemory and PostgreSQL
+
+### New API Surface
+
+| Method | Path | Auth |
+|--------|------|------|
+| POST | `/admin/auth/login` | public |
+| GET/POST/PUT/DELETE | `/admin/tenants` | SuperAdmin |
+| GET/POST/PUT/DELETE | `/admin/envelopes` | SuperAdmin |
+| GET | `/tenant/me` · `/tenant/envelope` | any tenant user |
+| GET/POST/PUT/DELETE | `/tenant/users` | tenant Admin |
+| GET | `/tenants` | public (workspace picker) |
+
+- Migration `AddPlatformAdmin` adds `Tenants`, `Envelopes`, `Roles`, `AdminUsers` tables + `Tenant.EnvelopeId`
+- All smoke-tested via curl: superadmin login/CRUD, envelope assignment, first-user-admin bootstrap, role validation, cross-tenant 403s, both portals return 200
+
+---
+
 ## ⚠️ Known Issues
 
 | Issue | Severity | Notes |
@@ -119,7 +186,7 @@ Full test suite run against clean PostgreSQL database. All 18 tests passing:
 ## 📁 Project File Tree
 
 ```
-Tessra/
+Tessera/
 ├── Directory.Build.props
 ├── .dockerignore
 ├── project-management/
@@ -128,12 +195,13 @@ Tessra/
 │   ├── decisions.md
 │   ├── learning-log.md
 │   └── progress.md
+├── apps/web/                         # Next.js frontend
 ├── apps/platform/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
-│   ├── Tessra.Platform.slnx
+│   ├── Tessera.Platform.slnx
 │   └── src/
-│       ├── Tessra.Platform.Api/
+│       ├── Tessera.Platform.Api/
 │       │   ├── Data/
 │       │   │   ├── AppDbContext.cs
 │       │   │   └── AppDbContextFactory.cs
@@ -157,13 +225,13 @@ Tessra/
 │       │   ├── appsettings.Development.json
 │       │   ├── appsettings.Docker.json
 │       │   └── Properties/launchSettings.json
-│       ├── Tessra.Platform.Domain/
+│       ├── Tessera.Platform.Domain/
 │       │   └── Models/
 │       │       ├── ApiErrorResponse.cs
 │       │       ├── Tenant.cs
 │       │       ├── Widget.cs
 │       │       ├── User.cs
 │       │       └── RefreshToken.cs
-│       └── Tessra.Platform.Observability/
+│       └── Tessera.Platform.Observability/
 │           └── Middleware/RequestLoggingMiddleware.cs
 ```

@@ -1,4 +1,6 @@
-# Tessra — Architecture Decisions
+# Tessera — Architecture Decisions
+
+> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together (data model, middleware pipeline, auth flows, API surface, gotchas).
 
 ## Recorded Decisions
 
@@ -34,9 +36,9 @@
   - Future-proofing — if we ever need to split into separate deployable services, the boundaries are already defined
   - Compile-time safety — changes to Domain or Observability that break the API host are caught at build time
 - **Structure**:
-  - `Tessra.Platform.Api` — ASP.NET Core host (entry point, configuration, pipeline)
-  - `Tessra.Platform.Domain` — shared domain models (ApiErrorResponse, future tenant/user models)
-  - `Tessra.Platform.Observability` — logging & monitoring conventions (RequestLoggingMiddleware)
+  - `Tessera.Platform.Api` — ASP.NET Core host (entry point, configuration, pipeline)
+  - `Tessera.Platform.Domain` — shared domain models (ApiErrorResponse, future tenant/user models)
+  - `Tessera.Platform.Observability` — logging & monitoring conventions (RequestLoggingMiddleware)
 - **Alternatives considered**:
   - Single project (simpler but harder to maintain as the codebase grows)
   - Vertical slice folders (too early — need more code before organizing by feature)

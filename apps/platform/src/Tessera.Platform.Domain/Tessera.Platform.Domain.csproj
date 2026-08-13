@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Directory.Build.props provides TargetFramework, Nullable, ImplicitUsings -->
+  <PropertyGroup>
+    <AssemblyName>Tessera.Platform.Domain</AssemblyName>
+    <RootNamespace>Tessera.Platform.Domain</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Finbuckle.MultiTenant.Abstractions" Version="10.1.2" />
+  </ItemGroup>
+
+</Project>

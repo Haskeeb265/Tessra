@@ -1,4 +1,6 @@
-# Tessra — Learning Log
+# Tessera — Learning Log
+
+> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
 
 > Last updated: 2026-07-28 (end of Session 8)
 > 
@@ -31,7 +33,7 @@
 | **Serilog integration** | `UseSerilog()` on host builder — replaces default .NET logging | 2026-07-27 |
 | **OpenAPI integration** | `AddOpenApi()` + `MapOpenApi()` — auto-generates OpenAPI docs | 2026-07-27 |
 | **Configuration / Options pattern** | `appsettings.json` and `appsettings.Development.json` — environment-based config | 2026-07-27 |
-| **Solution files (.sln/.slnx)** | `Tessra.Platform.slnx` — container referencing multiple projects | 2026-07-27 |
+| **Solution files (.sln/.slnx)** | `Tessera.Platform.slnx` — container referencing multiple projects | 2026-07-27 |
 | **Class libraries** | Domain and Observability projects — produce .dll, not executable | 2026-07-27 |
 | **Project references** | Api → Domain & Observability via `<ProjectReference>` in .csproj | 2026-07-27 |
 | **Directory.Build.props** | Shared MSBuild properties at repo root — applies to all child projects | 2026-07-27 |
@@ -50,7 +52,7 @@
 | **UseMultiTenant() middleware** | `Program.cs` — reads header, resolves tenant, sets `IMultiTenantContext` per-request | 2026-07-27 |
 | **EnforceMultiTenant** | Auto-sets `TenantId` to current tenant on save when null; throws if mismatch | 2026-07-27 |
 | **IMultiTenantContextAccessor** | Singleton using `AsyncLocal<T>` — flows tenant context per-request | 2026-07-27 |
-| **InMemory database provider** | `UseInMemoryDatabase("TessraPlatformDb")` — ephemeral, in-process RAM storage | 2026-07-27 |
+| **InMemory database provider** | `UseInMemoryDatabase("TesseraPlatformDb")` — ephemeral, in-process RAM storage | 2026-07-27 |
 | **MapGroup()** | `app.MapGroup("/widgets")` — groups routes under a common prefix | 2026-07-27 |
 | **Extension methods for endpoint organization** | Static extension method on `WebApplication` to keep Program.cs clean | 2026-07-27 |
 | **Route constraint `{id:guid}`** | Restricts route parameter to valid GUIDs | 2026-07-27 |

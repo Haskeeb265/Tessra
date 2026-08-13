@@ -1,4 +1,6 @@
-# Tessra — Project Roadmap
+# Tessera — Project Roadmap
+
+> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
 
 ## Vision
 A multi-tenant SaaS infrastructure platform that provides shared services (authentication, authorization, billing, monitoring, logging, rate limiting) for an AI-powered application. The C# platform service will be consumed by a Python MCP server and a Next.js frontend.
@@ -40,7 +42,9 @@ A multi-tenant SaaS infrastructure platform that provides shared services (authe
 
 ### Phase 6: Integration
 - [ ] Python MCP server setup
-- [ ] Next.js frontend setup
+- [x] Next.js frontend setup
+- [x] Two-portal split: business portal (`apps/web`) + superadmin portal (`apps/platform-portal`)
+- [x] Envelopes, roles & actions (catalog only — enforcement deferred until MCP)
 - [ ] Service-to-service communication contracts (OpenAPI)
 
 ### Phase 7: Production Readiness

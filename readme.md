@@ -22,9 +22,10 @@ These are cheap to change now, expensive to change in 6 months. Don't skip this 
 ## 1. Repo structure (monorepo layout)
 
 ```
-tessera/
+Tessera/
 ├── apps/
-│   ├── web/                 # Next.js frontend
+│   ├── web/                 # Next.js tenant portal (business users, :3000)
+│   ├── platform-portal/     # Next.js superadmin portal (tenants/envelopes, :3001)
 │   ├── mcp-server/          # Python MCP server
 │   └── platform/            # C# service: auth, authz, billing, logging, monitoring, rate limiting
 ├── infra/                   # Cloud provisioning (Pulumi/Terraform/Bicep) — separate from apps/platform above
