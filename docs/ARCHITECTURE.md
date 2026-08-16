@@ -45,7 +45,8 @@ Tessera/
 ├── .gitignore                       # dotnet gitignore (+ .env)
 ├── readme.md                        # Repo scaffolding checklist (roadmap for the repo itself)
 ├── docs/
-│   └── ARCHITECTURE.md              # ← you are here
+│   ├── ARCHITECTURE.md              # ← you are here (single source of truth)
+│   └── TABLES.md                    # database schema reference — every table, column, index
 ├── project-management/              # roadmap · tasks · decisions · learning-log · progress
 ├── infra/                           # placeholder (cloud provisioning — not yet used)
 ├── scripts/                         # placeholder (not yet used)
@@ -120,6 +121,9 @@ flowchart LR
 - **`Tessera.Platform.Api`** — the host: `Program.cs` wiring, `Endpoints/`, `Middleware/`, `Services/`, `Data/`, `Migrations/`, config files.
 
 ### 5.2 Data model (PostgreSQL schema)
+
+> 📄 **Full table-by-table reference** (columns, types, indexes, FKs): see
+> **[`docs/TABLES.md`](TABLES.md)**.
 
 Eight tables. Tenant-scoped tables (`Users`, `Widgets`, `RefreshTokens`) carry a
 `TenantId` and are marked `IsMultiTenant()` → Finbuckle adds a global query
