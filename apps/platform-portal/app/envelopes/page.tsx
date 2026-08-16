@@ -191,9 +191,8 @@ export default function EnvelopesPage() {
             </h2>
             <p className="mb-4 text-sm text-mocha">
               Actions are the Tessera capabilities a role is allowed (e.g.{" "}
-              <code className="rounded bg-beige px-1 font-mono text-xs">create_mcp</code>,
-              <code className="rounded bg-beige px-1 font-mono text-xs">add_tools</code>).
-              They&apos;re informational for now — enforcement lands with the MCP feature.
+              <code className="rounded bg-beige px-1 font-mono text-xs">create_widget</code>).
+              They&apos;re informational for now — enforcement is on the backlog.
             </p>
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -257,7 +256,7 @@ export default function EnvelopesPage() {
                     </Field>
                     <Field label="Actions (comma-separated)">
                       <TextInput
-                        placeholder="create_widget, edit_widget, create_mcp"
+                        placeholder="create_widget, edit_widget"
                         value={role.actions}
                         onChange={(e) =>
                           updateRole(index, { actions: e.target.value })

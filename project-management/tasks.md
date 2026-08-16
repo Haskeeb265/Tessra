@@ -1,33 +1,20 @@
 # Tessera — Tasks
 
-> **Current sprint**: MCP bridge scaffolded (Session 11) ✅
-> **Last updated**: 2026-08-14 (end of Session 11)
+> **Current sprint**: Two portals + envelopes/roles/actions ✅
+> **Last updated**: 2026-08-13 (end of Session 10)
 
 ---
 
 ## In Progress
 
-- [ ] **Next milestone**: MCP — action enforcement + real `McpServer` resource (or Observability / CI pipeline)
-
-## Completed
-
-### MCP Bridge Scaffold — Session 11
-- [x] **Product vision locked** — plug-and-play MCP templates for SMBs; tenants integrate tools; end users reach the service via ChatGPT/Claude/Gemini (recorded in `decisions.md`)
-- [x] **Framework decision** — official MCP Python SDK (`mcp` 2.0.0), low-level `mcp.server.Server` API (not FastMCP)
-- [x] **Transport decision** — stdio now, streamable HTTP later (runtime choice in the SDK)
-- [x] **Scaffold `apps/mcp-server`** — uv, Python 3.13 (`.python-version`), `src/tessera_mcp/` layout, ruff + mypy strict + pytest
-- [x] **`TesseraClient`** — platform auth as a tenant user: `POST /auth/login`, `X-Tenant-Id` on every request, auto-refresh on 401 (mirrors `apps/web/lib/api.ts`)
-- [x] **Tools** — `whoami` (`GET /tenant/me`), `list_widgets` (`GET /widgets`); failures returned as structured `is_error` results
-- [x] **Entry point** — `uv run tessera-mcp` runs the stdio MCP server
-- [x] **Tests** — 15 passing: 11 unit (mock transport) + 4 live integration over the real stdio protocol (`mcp.client.stdio`)
-- [x] **Verified** — ruff clean, mypy strict clean, live run against the InMemory platform (`dotnet run` on :5085) with a freshly registered tenant user
+- [ ] **Next milestone**: Choose next feature (Observability / CI pipeline)
 
 ## Completed
 
 ### Two-Portal Architecture — Session 10
 - [x] **Superadmin auth** — `AdminUser` (platform-level, no tenant), `POST /admin/auth/login`, `SuperAdminOnly` policy, `/admin` excluded from tenant validation
 - [x] **DB-backed tenant store** — `DbTenantStore` replaces the hardcoded in-memory store; superadmin-created tenants resolve at runtime
-- [x] **Envelope model** — `Envelope` bundles roles + their actions; `AppRole` + `ActionCatalog` (actions tracked but not enforced — backlog until MCP)
+- [x] **Envelope model** — `Envelope` bundles roles + their actions; `AppRole` + `ActionCatalog` (actions tracked but not enforced — on the backlog)
 - [x] **Tenant CRUD** — `GET/POST/PUT/DELETE /admin/tenants` (incl. envelope assignment)
 - [x] **Envelope CRUD** — `GET/POST/PUT/DELETE /admin/envelopes` (roles + actions editor)
 - [x] **Tenant user management** — `GET/POST/PUT/DELETE /tenant/users` (admin-only, roles validated against the tenant's envelope)
@@ -101,11 +88,10 @@
 
 ## 📌 Session Handoff — Start Here Next Time
 
-0. **MCP bridge works**: `apps/mcp-server` — `uv run tessera-mcp` (stdio), tools `whoami` + `list_widgets`, env `TESSERA_BASE_URL`/`TESSERA_TENANT_ID`/`TESSERA_EMAIL`/`TESSERA_PASSWORD`; `uv run pytest` (15 tests, integration auto-skips without a live API).
 1. **Two portals**: business portal at `http://localhost:3000` (`apps/web`), superadmin portal at `http://localhost:3001` (`apps/platform-portal`), both against the API on `http://localhost:5085`
 2. **Superadmin**: `superadmin@tessera.com` / `Admin123!` (seeded on both providers). Creates tenants + envelopes (roles/actions)
 3. **Tenant users**: first user to register in a workspace becomes its Admin; admins manage the team from the business portal (roles come from the tenant's envelope)
 4. **Builds pass** — `dotnet build` from `apps/platform/` · `npm run build` in `apps/web` and `apps/platform-portal`
-5. **Actions are NOT enforced yet** — they're a catalog on roles until the MCP feature lands (decided: keep actions on the backlog)
+5. **Actions are NOT enforced yet** — they're a catalog on roles (on the backlog)
 6. **Docker**: `docker compose up -d --build` from `apps/platform/` (PostgreSQL: seeded tenant admins `admin@tessera.com`)
-7. **Next**: Build on the MCP bridge — action enforcement (platform checks the acting user's actions before a tool call), the real `McpServer` resource (replaces `Widget`, `create_mcp`/`add_tools`/`delete_mcp`), or switch transport to streamable HTTP
+7. **Next**: Decide what to build — Observability or CI pipeline

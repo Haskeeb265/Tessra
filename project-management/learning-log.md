@@ -96,23 +96,6 @@
 | **Static factory methods** | `AuthResult.SuccessMessage()` — clean object creation with descriptive method names | 2026-07-28 |
 | **Static constants class** | `Roles` — grouping related constants in a dedicated static class for type-safety | 2026-07-28 |
 
-## MCP & Python Concepts (Session 11)
-
-### Covered
-| Concept | Where | Date |
-|---------|-------|------|
-| **MCP (Model Context Protocol)** | `apps/mcp-server` — the open protocol for connecting AI assistants to external tools/services | 2026-08-14 |
-| **MCP tools** | `server.py` — capabilities exposed to an assistant: `name` + `description` + JSON `input_schema`; calls return content blocks | 2026-08-14 |
-| **MCP transports** | `__main__.py` — **stdio** (client launches the server as a local process) vs **HTTP/streamable** (hosted URL). ChatGPT/Gemini can only use HTTP — stdio is dev-only for us | 2026-08-14 |
-| **Bridge pattern (product sense)** | The MCP server is a *consumer* of the C# platform (JWT + `X-Tenant-Id`) — the platform stays the single source of truth; the server never re-implements auth/authz | 2026-08-14 |
-| **`mcp` 2.0 low-level API** | `Server(name, on_list_tools=…, on_call_tool=…)` constructor kwargs (the 1.x `@server.list_tools()` decorators are gone); `Tool(input_schema=…)`, `ListToolsResult`, `CallToolResult` | 2026-08-14 |
-| **Structured tool errors** | `CallToolResult(is_error=True)` — a platform 403 (future action enforcement) must reach the assistant as a readable message, not a crashed request | 2026-08-14 |
-| **uv** | `apps/mcp-server` — fast Python package/project manager (replaces pip + venv + pip-tools); `uv sync`, `uv run`, `.python-version` pinning | 2026-08-14 |
-| **ruff / mypy strict / pytest** | `apps/mcp-server` — lint+format in one tool; `strict = true` typing from day one; pytest with `anyio_mode = "auto"` (anyio's pytest plugin only rewrites async tests when the ini option or a marker is present) | 2026-08-14 |
-| **`src/` layout** | `src/tessera_mcp/` + `tests/` — installable package layout (vs flat scripts), standard for Python projects | 2026-08-14 |
-| **httpx.MockTransport** | `tests/` — inject a fake HTTP transport into `httpx.AsyncClient` to unit-test the client with zero network | 2026-08-14 |
-| **Live integration testing** | `tests/test_integration_live.py` — spawn the real server via `mcp.client.stdio.stdio_client`, skip automatically when the platform is down | 2026-08-14 |
-
 ## Libraries Introduced
 | Library | Version | Purpose | Date |
 |---------|---------|---------|------|
@@ -128,6 +111,3 @@
 | `Microsoft.EntityFrameworkCore.Design` | 10.0.10 | EF Core CLI tools support (migrations) | 2026-07-27 |
 | `BCrypt.Net-Next` | 4.0.3 | BCrypt password hashing | 2026-07-27 |
 | `Microsoft.AspNetCore.Authentication.JwtBearer` | 10.0.10 | JWT bearer token authentication | 2026-07-27 |
-| `mcp` (official MCP Python SDK) | 2.0.0 | MCP server (low-level `mcp.server.Server`) + client (`mcp.client.stdio`) | 2026-08-14 |
-| `httpx` | 0.28.x | Async HTTP client for `TesseraClient` (+ `MockTransport` for tests) | 2026-08-14 |
-| `uv` / `ruff` / `mypy` / `pytest` | — | Python toolchain in `apps/mcp-server` | 2026-08-14 |

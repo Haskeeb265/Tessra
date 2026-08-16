@@ -13,8 +13,7 @@ public static class Roles
 /// <summary>
 /// The catalog of Tessera capabilities (actions) that a role can be granted.
 /// These are stored on roles so the UI can display them, but they are NOT
-/// enforced yet — enforcement is on the backlog until the underlying MCP
-/// functionality exists.
+/// enforced yet — enforcement is on the backlog.
 /// </summary>
 public static class ActionCatalog
 {
@@ -23,15 +22,11 @@ public static class ActionCatalog
     public const string EditWidget = "edit_widget";
     public const string DeleteWidget = "delete_widget";
     public const string ManageUsers = "manage_users";
-    public const string CreateMcp = "create_mcp";
-    public const string AddTools = "add_tools";
-    public const string DeleteMcp = "delete_mcp";
 
     /// <summary>All known actions, for validation/display purposes.</summary>
     public static readonly string[] All =
     [
-        ViewWidgets, CreateWidget, EditWidget, DeleteWidget,
-        ManageUsers, CreateMcp, AddTools, DeleteMcp
+        ViewWidgets, CreateWidget, EditWidget, DeleteWidget, ManageUsers
     ];
 }
 

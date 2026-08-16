@@ -2,7 +2,7 @@
 
 > 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
 
-> **Last updated**: 2026-08-14 (end of Session 11)
+> **Last updated**: 2026-08-13 (end of Session 10)
 > **Purpose**: Single source of truth for project state across sessions.
 > **How to use**: Start here every session. Read this file first, then open `tasks.md` for the checklist.
 
@@ -12,11 +12,11 @@
 
 | Item | Status |
 |------|--------|
-| **Current milestone** | MCP bridge scaffolded: `apps/mcp-server` with `whoami` + `list_widgets` tools ✅ |
-| **Last completed step** | MCP server (official SDK, stdio transport) consuming the platform as a tenant user — full agent → MCP → platform flow proven live |
-| **Next step** | MCP: action enforcement + real `McpServer` resource (or Observability / CI pipeline)
-| **Build status** | ✅ Platform: `dotnet build` 0 errors · Web: `npm run build` + `npm run lint` pass · MCP: ruff + mypy strict clean, 15/15 tests |
-| **Docker status** | ⚠️ Not running this session — MCP verified against InMemory API on `:5085` (`dotnet run`) |
+| **Current milestone** | Two portals (business + superadmin) with envelopes/roles/actions ✅ |
+| **Last completed step** | Full stack: superadmin auth + tenant/envelope/user management APIs, platform portal (apps/platform-portal), business portal Team page |
+| **Next step** | Choose next feature (Observability / CI pipeline)
+| **Build status** | ✅ Platform: `dotnet build` 0 errors · Web: `npm run build` + `npm run lint` pass |
+| **Docker status** | ⚠️ Not running this session — verified against InMemory API on `:5085` (`dotnet run`) |
 | **Blockers** | None |
 
 ---
@@ -147,8 +147,8 @@ Full test suite run against clean PostgreSQL database. All 18 tests passing:
 ### Envelopes, Roles & Actions
 
 - **Envelope** = bundle of roles + their allowed actions, assigned by a superadmin to a tenant
-- **`AppRole`** = a role inside an envelope with a list of actions; **`ActionCatalog`** documents the capabilities (e.g. `create_mcp`, `add_tools`, `manage_users`)
-- **Actions are a catalog only for now** — they display in the UI but are NOT enforced (enforcement lands with the MCP feature, per decision)
+- **`AppRole`** = a role inside an envelope with a list of actions; **`ActionCatalog`** documents the capabilities (e.g. `create_widget`, `edit_widget`, `manage_users`)
+- **Actions are a catalog only for now** — they display in the UI but are NOT enforced (enforcement is on the backlog)
 - Default **Standard** envelope seeded: `Admin`, `Manager`, `User` roles; superadmin can create more
 - **Tenant bootstrap**: the first user to register in an empty workspace becomes its `Admin`
 
@@ -175,34 +175,11 @@ Full test suite run against clean PostgreSQL database. All 18 tests passing:
 
 ---
 
-## 📋 What We Built This Session (Session 11)
-
-### MCP Bridge — `apps/mcp-server` (Python)
-
-**Goal:** the bridge between AI assistants and the platform — where action enforcement will land. Product vision (clarified with the user): plug-and-play **MCP server templates for SMBs** — tenants integrate their tools, end users reach the service via ChatGPT/Claude/Gemini.
-
-- **Framework**: official **MCP Python SDK** (`mcp` 2.0.0) — low-level `mcp.server.Server` (constructor `on_list_tools` / `on_call_tool` handlers; note: the 1.x decorator API is gone in 2.x)
-- **Transport**: **stdio** now; **streamable HTTP** later (runtime choice in the SDK, confined to `__main__.py`)
-- **`TesseraClient`** (`client.py`) — consumes the platform as a tenant user: `POST /auth/login`, `X-Tenant-Id` on every request, Bearer token, auto-refresh on 401 (same pattern as `apps/web/lib/api.ts`)
-- **Tools** (`tools.py` + `server.py`): `whoami` → `GET /tenant/me`; `list_widgets` → `GET /widgets`. Failures (unknown tool / platform 403) return structured `is_error` results, not crashes
-- **Entry point**: `uv run tessera-mcp` (env: `TESSERA_BASE_URL`, `TESSERA_TENANT_ID`, `TESSERA_EMAIL`, `TESSERA_PASSWORD`)
-- **Tooling**: uv · Python 3.13 (`.python-version`) · ruff · mypy strict · pytest (`anyio_mode = auto`) · `src/tessera_mcp/` layout
-- **Tests**: 15 passing — 11 unit (httpx mock transport) + 4 live integration over the real stdio protocol (`mcp.client.stdio` spawning the actual server, auto-skip when no API is up)
-- **Live verification**: ran the platform via `dotnet run` (InMemory, `:5085`), registered `mcp-bot@tessera.com` in `alpha-corp` (first-user bootstrap → Admin with `create_mcp`/`add_tools` actions), and called both tools through a real MCP client session
-
-### Key learnings (Session 11)
-- The MCP protocol: AI assistant ↔ MCP server (tools) ↔ your platform. Tools have a name, description, JSON schema; calls return content blocks.
-- stdio vs HTTP transport: local subprocess vs hosted URL. ChatGPT/Gemini can only use HTTP — the product needs streamable HTTP eventually.
-- `mcp` 2.0 API: `Server(name, on_list_tools=…, on_call_tool=…)`, `Tool(input_schema=…)`, `ListToolsResult` / `CallToolResult`; anyio pytest plugin needs `anyio_mode = "auto"`.
-
----
-
 ## ⚠️ Known Issues
 
 | Issue | Severity | Notes |
 |-------|----------|-------|
 | NU1903 — Microsoft.OpenApi vulnerability | Low | Transitive dependency. Will resolve with SDK update. |
-| MCP server acts as one tenant user | — | Milestone 1 design: credentials via env. Per-end-user identity / service accounts is an open question for a later session. |
 
 ---
 
@@ -218,7 +195,6 @@ Tessera/
 │   ├── decisions.md
 │   ├── learning-log.md
 │   └── progress.md
-├── apps/mcp-server/                   # Python MCP server (bridge to the platform) — Session 11
 ├── apps/web/                         # Next.js frontend
 ├── apps/platform/
 │   ├── Dockerfile

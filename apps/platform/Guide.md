@@ -12,8 +12,8 @@ how to run it, test it, and what commands to use.
 
 The platform service owns the cross-cutting concerns every tenant-facing request
 flows through: authentication, authorization, multi-tenancy, roles & actions.
-The Next.js frontends (`apps/web`, `apps/platform-portal`) and the future Python
-MCP server are **consumers** of these services, not owners.
+The Next.js frontends (`apps/web`, `apps/platform-portal`) are **consumers** of
+these services, not owners.
 
 ---
 
@@ -90,7 +90,7 @@ SA_TOKEN=$(echo "$SA" | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
 
 # 3. Superadmin: create an envelope, then a tenant assigned to it
 curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"name":"Pro","roles":[{"name":"Admin","actions":["create_mcp","add_tools","manage_users"]},{"name":"Editor","actions":["create_widget","edit_widget"]}]}' \
+  -d '{"name":"Pro","roles":[{"name":"Admin","actions":["manage_users","create_widget","edit_widget"]},{"name":"Editor","actions":["create_widget","edit_widget"]}]}' \
   $API/admin/envelopes
 curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"identifier":"gamma-corp","name":"Gamma Corp","envelopeId":"<envelope-id>"}' \

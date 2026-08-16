@@ -1,6 +1,6 @@
 # Tessera — Repo Scaffolding Checklist
 
-Stack: Python (MCP server) · C# (platform: auth/authz/billing/logging/monitoring/rate limiting) · Next.js (frontend) · Multitenant SaaS · Team of 2 (one non-technical-leaning)
+Stack: C# (platform: auth/authz/billing/logging/monitoring/rate limiting) · Next.js (frontend) · Multitenant SaaS · Team of 2 (one non-technical-leaning)
 
 ---
 
@@ -8,14 +8,14 @@ Stack: Python (MCP server) · C# (platform: auth/authz/billing/logging/monitorin
 
 These are cheap to change now, expensive to change in 6 months. Don't skip this step even though it's tempting to jump into `npx create-next-app`.
 
-- [ ] **C# owns the platform/core services layer**: authentication, authorization, billing, logging, monitoring, rate limiting — the cross-cutting concerns every tenant-facing request flows through. Python (MCP) and Next.js are consumers of these services, not owners of them. Two follow-on decisions this forces:
+- [ ] **C# owns the platform/core services layer**: authentication, authorization, billing, logging, monitoring, rate limiting — the cross-cutting concerns every tenant-facing request flows through. The Next.js frontends are consumers of these services, not owners of them. Two follow-on decisions this forces:
   - **One C# service or several?** A single "platform" service exposing auth/authz/billing/etc. as modules is simpler to run and deploy at 2-person scale. Splitting into separate services (auth service, billing service, etc.) buys you independent scaling/deploys you almost certainly don't need yet. Default to one service, split later if a specific piece needs it.
-  - **How do Python and Next talk to it?** Likely an internal HTTP/gRPC API. Decide the contract format now (OpenAPI is a good default — see §7) so the Python and TS sides can codegen clients instead of hand-rolling HTTP calls.
+  - **How does Next.js talk to it?** Likely an internal HTTP/gRPC API. Decide the contract format now (OpenAPI is a good default — see §7) so the TS side can codegen clients instead of hand-rolling HTTP calls.
   - Cloud infra provisioning (the actual "spin up a database/VM/cluster" IaC) is a separate concern from this — decide separately whether that's Pulumi/Terraform/Bicep, and where it lives (`infra/` in §1 either way).
 - [ ] **Multitenancy model**: shared DB + `tenant_id` column vs. schema-per-tenant vs. DB-per-tenant. Write this down in `ARCHITECTURE.md` on day one — retrofitting is painful.
 - [ ] **Identity/auth provider**: roll your own vs. Auth0/Clerk/Azure AD B2C/WorkOS. For multitenant SaaS, an off-the-shelf provider with org/tenant support (Clerk, WorkOS, Azure AD B2C) will save you weeks.
 - [ ] **Cloud target**: Azure (pairs naturally with C#), AWS, or GCP. Pick before writing Pulumi/Terraform.
-- [ ] **Monorepo vs. polyrepo**: given 3 languages + small team, I'd default to **monorepo**. One PR can touch frontend + backend + MCP server together, one CI setup, one source of truth for your non-technical teammate to look at. Polyrepo only pays off with larger/more independent teams.
+- [ ] **Monorepo vs. polyrepo**: given 2 languages + small team, I'd default to **monorepo**. One PR can touch frontend + backend together, one CI setup, one source of truth for your non-technical teammate to look at. Polyrepo only pays off with larger/more independent teams.
 
 ---
 
@@ -26,7 +26,6 @@ Tessera/
 ├── apps/
 │   ├── web/                 # Next.js tenant portal (business users, :3000)
 │   ├── platform-portal/     # Next.js superadmin portal (tenants/envelopes, :3001)
-│   ├── mcp-server/          # Python MCP server
 │   └── platform/            # C# service: auth, authz, billing, logging, monitoring, rate limiting
 ├── infra/                   # Cloud provisioning (Pulumi/Terraform/Bicep) — separate from apps/platform above
 ├── packages/                # Shared code (e.g. shared TS types, OpenAPI specs)
@@ -54,14 +53,6 @@ Tessera/
 
 ## 2. Language-specific setup
 
-### Python (MCP server)
-- [ ] Use **uv** (fast, modern) or Poetry for dependency management — pin a lockfile either way.
-- [ ] `ruff` for linting + formatting (replaces flake8/black/isort in one tool).
-- [ ] `mypy` for type checking, strict mode on from day one (much harder to retrofit).
-- [ ] `pytest` + `pytest-cov` for tests.
-- [ ] Structure: `src/tessera_mcp/` layout (not flat), with `tests/` alongside.
-- [ ] Pin Python version via `.python-version` (pyenv) or in `pyproject.toml`.
-
 ### C# (platform service: auth, authz, billing, logging, monitoring, rate limiting)
 - [ ] `.editorconfig` with C# conventions (analyzers will enforce style).
 - [ ] Enable nullable reference types (`<Nullable>enable</Nullable>`) from the start.
@@ -77,7 +68,7 @@ Tessera/
   Tessera.Platform.Domain       # shared tenant/user/entitlement models
   Tessera.Platform.Tests
   ```
-- [ ] Expose these as an internal API (REST or gRPC) with a published OpenAPI/proto contract — this is what Python and Next.js will codegen clients against, so treat the contract as a first-class artifact, not an afterthought.
+- [ ] Expose these as an internal API (REST or gRPC) with a published OpenAPI/proto contract — this is what Next.js will codegen clients against, so treat the contract as a first-class artifact, not an afterthought.
 - [ ] `dotnet format` wired into pre-commit/CI.
 
 ### Next.js (frontend)
@@ -93,7 +84,7 @@ Tessera/
 
 - [ ] **Single entrypoint for commands.** A `Makefile` or `justfile` at the root with targets like:
   ```
-  make dev        # spins up frontend, mcp-server, platform, db all at once
+  make dev        # spins up frontend, platform, db all at once
   make test       # runs all test suites
   make lint       # runs all linters
   make db-migrate
@@ -108,7 +99,6 @@ Tessera/
   ```
   .github/workflows/
     ci-web.yml       (triggers on apps/web/**)
-    ci-mcp.yml       (triggers on apps/mcp-server/**)
     ci-platform.yml  (triggers on apps/platform/**)
     ci-infra.yml     (triggers on infra/**)
   ```
@@ -135,17 +125,17 @@ Tessera/
 - [ ] **Branching**: trunk-based (`main` + short-lived feature branches) is usually right for a 2-person team — GitFlow's overhead isn't worth it at this size.
 - [ ] **Commit convention**: Conventional Commits (`feat:`, `fix:`, `chore:`) — cheap to adopt now, makes changelogs/semver automatable later.
 - [ ] Branch protection on `main`: require PR + passing CI before merge, even solo — it's your safety net.
-- [ ] Decide on a versioning/release approach for the MCP server and platform service if they'll be published/deployed independently (e.g. Changesets for the JS side).
+- [ ] Decide on a versioning/release approach for the platform service if it'll be published/deployed independently (e.g. Changesets for the JS side).
 
 ---
 
 ## 6. Multitenancy-specific groundwork
 
 - [ ] Document the tenant isolation strategy in `docs/ARCHITECTURE.md` (see §0).
-- [ ] Decide how tenant context flows through the system: JWT claim, header, subdomain (`acme.tessera.app`)? Since C# owns auth/authz, it should be the single place that mints/validates tenant context, and Next.js + the MCP server should treat it as the source of truth rather than each doing their own checks.
-- [ ] Because rate limiting lives in the C# platform layer, decide whether the MCP server calls through the platform service for rate-limit checks, or whether limits are enforced at a shared gateway/reverse-proxy in front of everything (the latter is often cleaner — one enforcement point instead of every service needing to call out).
-- [ ] Logging/monitoring conventions (structured log format, correlation IDs, metrics naming) should be defined once in `Tessera.Platform.Observability` and documented so the Python and Next sides emit logs in a compatible shape — otherwise you end up with three different logging styles that don't correlate in your dashboards.
-- [ ] Make sure every log line and trace across all three components carries a `tenant_id` and `request_id` for correlation. Set this convention now while it's easy.
+- [ ] Decide how tenant context flows through the system: JWT claim, header, subdomain (`acme.tessera.app`)? Since C# owns auth/authz, it should be the single place that mints/validates tenant context, and the Next.js frontends should treat it as the source of truth rather than each doing their own checks.
+- [ ] Because rate limiting lives in the C# platform layer, decide whether limits are enforced in the platform service itself, or at a shared gateway/reverse-proxy in front of everything (the latter is often cleaner — one enforcement point instead of every service needing to call out).
+- [ ] Logging/monitoring conventions (structured log format, correlation IDs, metrics naming) should be defined once in `Tessera.Platform.Observability` and documented so the frontend emits logs in a compatible shape — otherwise you end up with different logging styles that don't correlate in your dashboards.
+- [ ] Make sure every log line and trace across all components carries a `tenant_id` and `request_id` for correlation. Set this convention now while it's easy.
 
 ---
 

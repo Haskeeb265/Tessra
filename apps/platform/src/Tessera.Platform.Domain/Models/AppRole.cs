@@ -2,9 +2,9 @@ namespace Tessera.Platform.Domain.Models;
 
 /// <summary>
 /// A role defined inside an envelope. <see cref="Actions"/> lists the
-/// Tessera capabilities the role is allowed to use (e.g. "create_mcp").
+/// Tessera capabilities the role is allowed to use (e.g. "create_widget").
 /// NOTE: actions are tracked as a catalog for now — enforcement is on the
-/// backlog until the MCP functionality is implemented.
+/// backlog.
 /// </summary>
 public class AppRole
 {

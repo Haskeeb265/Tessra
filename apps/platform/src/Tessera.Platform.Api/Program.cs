@@ -224,14 +224,13 @@ try
                         Actions =
                         [
                             ActionCatalog.ManageUsers, ActionCatalog.CreateWidget,
-                            ActionCatalog.EditWidget, ActionCatalog.DeleteWidget,
-                            ActionCatalog.CreateMcp, ActionCatalog.AddTools
+                            ActionCatalog.EditWidget, ActionCatalog.DeleteWidget
                         ]
                     },
                     new AppRole
                     {
                         Name = "Manager",
-                        Actions = [ActionCatalog.CreateWidget, ActionCatalog.EditWidget, ActionCatalog.CreateMcp]
+                        Actions = [ActionCatalog.CreateWidget, ActionCatalog.EditWidget]
                     },
                     new AppRole
                     {
