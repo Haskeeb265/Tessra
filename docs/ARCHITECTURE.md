@@ -1,6 +1,6 @@
 # Tessera — Architecture
 
-> **Last verified against the code**: 2026-08-13
+> **Last verified against the code**: 2026-08-14
 > **Read this first.** This document is the single source of truth for how the
 > system fits together. If something here disagrees with what you see in the
 > code, the code is newer — update this file.
@@ -12,7 +12,12 @@
 Tessera is a **multi-tenant SaaS platform**: a C# "platform" service owns the
 cross-cutting concerns (authentication, authorization, tenant context, roles &
 actions) and exposes them through a JSON API consumed by **two Next.js
-frontends**. A Python MCP server is planned but **not yet built**.
+frontends** and a **Python MCP server** (the product's AI-facing bridge).
+
+**Product vision (Session 11):** plug-and-play MCP server templates for SMBs —
+tenants pick a template, integrate their own tools, and their end users reach
+the resulting service through AI assistants (ChatGPT, Claude, Gemini). The MCP
+server is the bridge; the C# platform remains the source of truth.
 
 ```mermaid
 flowchart LR
@@ -21,7 +26,8 @@ flowchart LR
     WEB -->|HTTP + X-Tenant-Id + JWT| API["Tessera.Platform.Api"]
     PP -->|HTTP + SuperAdmin JWT| API
     API --> DB[("PostgreSQL 16<br/>shared DB + tenant_id column")]
-    MCP["Python MCP server (planned, not built)"] -.-> API
+    AI[AI assistants<br/>ChatGPT / Claude / Gemini] -->|MCP protocol| MCP["apps/mcp-server · Python MCP server"]
+    MCP -->|HTTP + X-Tenant-Id + JWT| API
 ```
 
 **Key rule**: the C# platform is the **source of truth** for auth, authz,
@@ -54,7 +60,7 @@ Tessera/
 └── apps/
     ├── web/                         # Next.js 16 business (tenant) portal — :3000
     ├── platform-portal/             # Next.js 16 superadmin portal — :3001
-    ├── mcp-server/                  # Python MCP server — PLANNED, not built
+    ├── mcp-server/                  # Python MCP server (bridge — scaffolded Session 11): uv, src/tessera_mcp/, ruff + mypy + pytest
     └── platform/                    # C# platform service (this doc's focus)
         ├── Dockerfile               # Multi-stage .NET 10 build (SDK → publish → aspnet runtime)
         ├── docker-compose.yml       # api (:5000) + PostgreSQL 16 (:5432), pgdata volume
@@ -534,7 +540,7 @@ deliberately at startup.
 | Item | Status |
 |---|---|
 | **Actions not enforced** | `ActionCatalog` entries on roles are **display-only**. Enforcement lands with the MCP feature (decided — keep on backlog). |
-| Python MCP server | Not started (Phase 6). |
+| Python MCP server | Scaffolded (Session 11): official `mcp` SDK 2.0, stdio transport, `TesseraClient` + `whoami` / `list_widgets` tools, 15 tests. Missing: streamable HTTP transport, action enforcement, per-end-user identity. |
 | Widgets → real resource | When MCP lands, replace `Widget` with e.g. `McpServer` guarded by `create_mcp`/`add_tools` actions. |
 | `NU1903` — `Microsoft.OpenApi` 2.0.0 vuln | Low severity, transitive; resolves with SDK/package update. |
 | Tests | No automated test project yet (only manual curl smoke tests documented in `Guide.md` / `progress.md`). |
@@ -579,7 +585,7 @@ Read these before changing anything. Each one caused a real bug or confusion.
 
 ## 16. Where to go next (see `project-management/roadmap.md`)
 
-1. **MCP server** (Phase 6) — the real product resource; replace widgets; wire action enforcement.
+1. **MCP bridge built** (Session 11, `apps/mcp-server`) — next: action enforcement (platform checks the acting user's actions before a tool call), the real `McpServer` resource (replaces `Widget`; `create_mcp`/`add_tools`/`delete_mcp`), then switch transport to streamable HTTP for hosted access.
 2. **Observability** (Phase 4) — correlation IDs across C#/TS/Python, structured log conventions in `Tessera.Platform.Observability`.
 3. **CI pipeline** (Phase 7) — GitHub Actions split by path (ci-web / ci-platform / ci-mcp / ci-infra).
 4. **Deploy** — Fly.io + PostgreSQL, secrets management, dev container, onboarding doc.
