@@ -1,21 +1,27 @@
 using System.Diagnostics;
 using System.Net;
+
 using Serilog;
+
 using Tessera.Platform.Domain.Models;
 
 namespace Tessera.Platform.Api.Middleware;
 
 /// <summary>
-/// Global exception handling middleware that catches unhandled exceptions,
-/// maps them to appropriate HTTP status codes, and returns a consistent
-/// JSON error response using the <see cref="ApiErrorResponse"/> contract.
+/// Global exception handling middleware.
+///
+/// Catches unhandled exceptions, maps them to appropriate HTTP status
+/// codes, logs the exception, and returns a consistent JSON error
+/// response using the <see cref="ApiErrorResponse"/> contract.
 /// </summary>
 public class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IHostEnvironment _environment;
 
-    public ExceptionHandlingMiddleware(RequestDelegate next, IHostEnvironment environment)
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        IHostEnvironment environment)
     {
         _next = next;
         _environment = environment;
@@ -27,33 +33,44 @@ public class ExceptionHandlingMiddleware
         {
             await _next(context);
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            await HandleExceptionAsync(context, ex);
+            await HandleExceptionAsync(context, exception);
         }
     }
 
-    private async Task HandleExceptionAsync(HttpContext context, Exception exception)
+    // ============================================================
+    // Exception Handling
+    // ============================================================
+
+    private async Task HandleExceptionAsync(
+        HttpContext context,
+        Exception exception)
     {
-        var traceId = Activity.Current?.Id ?? context.TraceIdentifier;
-        var (statusCode, message, logLevel) = MapException(exception);
+        var traceId = Activity.Current?.Id
+            ?? context.TraceIdentifier;
+
+        var (statusCode, message, logLevel) =
+            MapException(exception);
 
         Log.Write(
             logLevel,
             exception,
-            "HTTP {Method} {Path} failed with {StatusCode}: {Message} [TraceId: {TraceId}]",
+            "HTTP {Method} {Path} failed with {StatusCode}: {Message} " +
+            "[TraceId: {TraceId}]",
             context.Request.Method,
             context.Request.Path,
             statusCode,
             message,
-            traceId
-        );
+            traceId);
 
         var response = new ApiErrorResponse
         {
             StatusCode = statusCode,
             Message = message,
-            Details = _environment.IsDevelopment() ? exception.StackTrace : null,
+            Details = _environment.IsDevelopment()
+                ? exception.StackTrace
+                : null,
             TraceId = traceId,
             Timestamp = DateTime.UtcNow
         };
@@ -64,31 +81,73 @@ public class ExceptionHandlingMiddleware
         await context.Response.WriteAsJsonAsync(response);
     }
 
-    private static (int StatusCode, string Message, Serilog.Events.LogEventLevel LogLevel) MapException(Exception exception)
+    // ============================================================
+    // Exception Mapping
+    // ============================================================
+
+    private static (
+        int StatusCode,
+        string Message,
+        Serilog.Events.LogEventLevel LogLevel)
+        MapException(Exception exception)
     {
         return exception switch
         {
-            // Client disconnected — don't treat as a server error
+            // Client disconnected or explicitly cancelled the request.
             OperationCanceledException or TaskCanceledException =>
-                (499, "The request was cancelled.", Serilog.Events.LogEventLevel.Information),
+                (
+                    499,
+                    "The request was cancelled.",
+                    Serilog.Events.LogEventLevel.Information
+                ),
 
+            // Requested resource could not be found.
             KeyNotFoundException or FileNotFoundException =>
-                ((int)HttpStatusCode.NotFound, "The requested resource was not found.", Serilog.Events.LogEventLevel.Warning),
+                (
+                    (int)HttpStatusCode.NotFound,
+                    "The requested resource was not found.",
+                    Serilog.Events.LogEventLevel.Warning
+                ),
 
+            // Invalid input or invalid application state.
             ArgumentException or InvalidOperationException =>
-                ((int)HttpStatusCode.BadRequest, exception.Message, Serilog.Events.LogEventLevel.Warning),
+                (
+                    (int)HttpStatusCode.BadRequest,
+                    exception.Message,
+                    Serilog.Events.LogEventLevel.Warning
+                ),
 
+            // Authenticated user lacks permission for the operation.
             UnauthorizedAccessException =>
-                ((int)HttpStatusCode.Forbidden, "You are not authorized to perform this action.", Serilog.Events.LogEventLevel.Warning),
+                (
+                    (int)HttpStatusCode.Forbidden,
+                    "You are not authorized to perform this action.",
+                    Serilog.Events.LogEventLevel.Warning
+                ),
 
+            // The requested functionality is not available.
             NotImplementedException =>
-                ((int)HttpStatusCode.NotImplemented, "This feature has not been implemented yet.", Serilog.Events.LogEventLevel.Warning),
+                (
+                    (int)HttpStatusCode.NotImplemented,
+                    "This feature has not been implemented yet.",
+                    Serilog.Events.LogEventLevel.Warning
+                ),
 
+            // An external/upstream service failed.
             HttpRequestException =>
-                ((int)HttpStatusCode.BadGateway, "An upstream service returned an error.", Serilog.Events.LogEventLevel.Error),
+                (
+                    (int)HttpStatusCode.BadGateway,
+                    "An upstream service returned an error.",
+                    Serilog.Events.LogEventLevel.Error
+                ),
 
+            // Anything unexpected is treated as an internal server error.
             _ =>
-                ((int)HttpStatusCode.InternalServerError, "An unexpected error occurred. Please try again later.", Serilog.Events.LogEventLevel.Error)
+                (
+                    (int)HttpStatusCode.InternalServerError,
+                    "An unexpected error occurred. Please try again later.",
+                    Serilog.Events.LogEventLevel.Error
+                )
         };
     }
 }

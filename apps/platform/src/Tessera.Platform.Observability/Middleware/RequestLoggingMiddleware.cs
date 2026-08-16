@@ -1,6 +1,8 @@
 using System.Diagnostics;
-using Microsoft.AspNetCore.Http;
+
 using Serilog;
+
+using Microsoft.AspNetCore.Http;
 
 namespace Tessera.Platform.Observability.Middleware;
 

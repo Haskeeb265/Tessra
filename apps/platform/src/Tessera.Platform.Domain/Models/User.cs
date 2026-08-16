@@ -30,6 +30,10 @@ public static class ActionCatalog
     ];
 }
 
+/// <summary>
+/// A tenant-scoped user account. The role is drawn from the tenant's
+/// envelope when one is assigned.
+/// </summary>
 public class User
 {
     public Guid Id { get; set; } = Guid.NewGuid();

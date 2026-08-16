@@ -1,5 +1,7 @@
 using Finbuckle.MultiTenant.EntityFrameworkCore;
+
 using Microsoft.EntityFrameworkCore;
+
 using Tessera.Platform.Api.Data;
 using Tessera.Platform.Api.Services;
 using Tessera.Platform.Domain.Models;
@@ -10,286 +12,476 @@ public static class AdminEndpoints
 {
     public static void MapAdminEndpoints(this WebApplication app)
     {
-        // ─── Superadmin auth (public, no tenant required) ──────────────
-        app.MapGroup("/admin/auth")
-            .MapPost("/login", async (
-                LoginRequest request,
-                AdminAuthService authService) =>
-            {
-                var result = await authService.LoginAsync(request.Email, request.Password);
+        // ============================================================
+        // Superadmin Authentication
+        // ============================================================
 
-                return result.IsSuccess
-                    ? Results.Ok(new TokenResponse(result.AccessToken!, result.RefreshToken!))
-                    : Results.Unauthorized();
-            })
+        app.MapGroup("/admin/auth")
+            .MapPost(
+                "/login",
+                async (
+                    LoginRequest request,
+                    AdminAuthService authService) =>
+                {
+                    var result = await authService.LoginAsync(
+                        request.Email,
+                        request.Password);
+
+                    return result.IsSuccess
+                        ? Results.Ok(
+                            new TokenResponse(
+                                result.AccessToken!,
+                                result.RefreshToken!))
+                        : Results.Unauthorized();
+                })
             .WithName("AdminLogin");
 
-        // ─── Tenant management ─────────────────────────────────────────
+        // ============================================================
+        // Tenant Management
+        // ============================================================
+
         var tenants = app.MapGroup("/admin/tenants")
             .RequireAuthorization("SuperAdminOnly");
 
-        tenants.MapGet("/", async (AppDbContext db) =>
-        {
-            var result = await db.Tenants
-                .AsNoTracking()
-                .Select(t => new
+        // ------------------------------------------------------------
+        // List Tenants
+        // ------------------------------------------------------------
+
+        tenants.MapGet(
+            "/",
+            async (AppDbContext db) =>
+            {
+                var result = await db.Tenants
+                    .AsNoTracking()
+                    .Select(t => new
+                    {
+                        t.Id,
+                        t.Identifier,
+                        t.Name,
+                        t.EnvelopeId,
+
+                        EnvelopeName = t.EnvelopeId == null
+                            ? null
+                            : db.Envelopes
+                                .Where(e => e.Id == t.EnvelopeId)
+                                .Select(e => e.Name)
+                                .FirstOrDefault(),
+
+                        t.CreatedAt
+                    })
+                    .OrderBy(t => t.Name)
+                    .ToListAsync();
+
+                return Results.Ok(result);
+            })
+            .WithName("AdminListTenants");
+
+        // ------------------------------------------------------------
+        // Create Tenant
+        // ------------------------------------------------------------
+
+        tenants.MapPost(
+            "/",
+            async (
+                CreateTenantRequest request,
+                AppDbContext db) =>
+            {
+                var identifier = request.Identifier
+                    .Trim()
+                    .ToLowerInvariant();
+
+                if (!IsValidIdentifier(identifier))
                 {
-                    t.Id,
-                    t.Identifier,
-                    t.Name,
-                    t.EnvelopeId,
-                    EnvelopeName = t.EnvelopeId == null
-                        ? null
-                        : db.Envelopes.Where(e => e.Id == t.EnvelopeId).Select(e => e.Name).FirstOrDefault(),
-                    t.CreatedAt
-                })
-                .OrderBy(t => t.Name)
-                .ToListAsync();
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "Identifier must be lowercase letters, " +
+                                "numbers, and hyphens only."
+                        });
+                }
 
-            return Results.Ok(result);
-        })
-        .WithName("AdminListTenants");
+                if (await db.Tenants.AnyAsync(
+                        t => t.Identifier == identifier))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "A tenant with this identifier already exists."
+                        });
+                }
 
-        tenants.MapPost("/", async (CreateTenantRequest request, AppDbContext db) =>
-        {
-            var identifier = request.Identifier.Trim().ToLowerInvariant();
+                if (request.EnvelopeId is not null &&
+                    !await db.Envelopes.AnyAsync(
+                        e => e.Id == request.EnvelopeId))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error = "The specified envelope does not exist."
+                        });
+                }
 
-            if (!IsValidIdentifier(identifier))
+                var tenant = new Tenant
+                {
+                    Id = identifier,
+                    Identifier = identifier,
+                    Name = request.Name.Trim(),
+                    EnvelopeId = request.EnvelopeId
+                };
+
+                db.Tenants.Add(tenant);
+
+                await db.SaveChangesAsync();
+
+                return Results.Created(
+                    $"/admin/tenants/{tenant.Id}",
+                    tenant);
+            })
+            .WithName("AdminCreateTenant");
+
+        // ------------------------------------------------------------
+        // Update Tenant
+        // ------------------------------------------------------------
+
+        tenants.MapPut(
+            "/{id}",
+            async (
+                string id,
+                UpdateTenantRequest request,
+                AppDbContext db) =>
             {
-                return Results.BadRequest(new { error = "Identifier must be lowercase letters, numbers, and hyphens only." });
-            }
+                var tenant = await db.Tenants
+                    .FirstOrDefaultAsync(t => t.Id == id);
 
-            if (await db.Tenants.AnyAsync(t => t.Identifier == identifier))
+                if (tenant is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var newIdentifier = request.Identifier
+                    .Trim()
+                    .ToLowerInvariant();
+
+                if (!IsValidIdentifier(newIdentifier))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "Identifier must be lowercase letters, " +
+                                "numbers, and hyphens only."
+                        });
+                }
+
+                if (newIdentifier != tenant.Identifier &&
+                    await db.Tenants.AnyAsync(
+                        t => t.Identifier == newIdentifier))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "A tenant with this identifier already exists."
+                        });
+                }
+
+                if (request.EnvelopeId is not null &&
+                    !await db.Envelopes.AnyAsync(
+                        e => e.Id == request.EnvelopeId))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error = "The specified envelope does not exist."
+                        });
+                }
+
+                // Users store the tenant ID internally, so keep the
+                // primary key stable even when the identifier changes.
+                tenant.Identifier = newIdentifier;
+                tenant.Name = request.Name.Trim();
+                tenant.EnvelopeId = request.EnvelopeId;
+
+                await db.SaveChangesAsync();
+
+                return Results.Ok(tenant);
+            })
+            .WithName("AdminUpdateTenant");
+
+        // ------------------------------------------------------------
+        // Delete Tenant
+        // ------------------------------------------------------------
+
+        tenants.MapDelete(
+            "/{id}",
+            async (
+                string id,
+                AppDbContext db,
+                HttpContext http) =>
             {
-                return Results.BadRequest(new { error = "A tenant with this identifier already exists." });
-            }
+                var tenant = await db.Tenants
+                    .FirstOrDefaultAsync(t => t.Id == id);
 
-            if (request.EnvelopeId is not null &&
-                !await db.Envelopes.AnyAsync(e => e.Id == request.EnvelopeId))
-            {
-                return Results.BadRequest(new { error = "The specified envelope does not exist." });
-            }
+                if (tenant is null)
+                {
+                    return Results.NotFound();
+                }
 
-            var tenant = new Tenant
-            {
-                Id = identifier,
-                Identifier = identifier,
-                Name = request.Name.Trim(),
-                EnvelopeId = request.EnvelopeId
-            };
+                // PostgreSQL:
+                // Use raw SQL to bypass Finbuckle's EnforceMultiTenant,
+                // which requires a tenant context that superadmin
+                // requests do not have.
+                if (db.Database.IsRelational())
+                {
+                    await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"Users\" WHERE \"TenantId\" = {0}",
+                        tenant.Id);
 
-            db.Tenants.Add(tenant);
-            await db.SaveChangesAsync();
+                    await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"RefreshTokens\" WHERE \"TenantId\" = {0}",
+                        tenant.Id);
 
-            return Results.Created($"/admin/tenants/{tenant.Id}", tenant);
-        })
-        .WithName("AdminCreateTenant");
+                    await db.Database.ExecuteSqlRawAsync(
+                        "DELETE FROM \"Tenants\" WHERE \"Id\" = {0}",
+                        tenant.Id);
 
-        tenants.MapPut("/{id}", async (string id, UpdateTenantRequest request, AppDbContext db) =>
-        {
-            var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
-            if (tenant is null)
-            {
-                return Results.NotFound();
-            }
+                    return Results.NoContent();
+                }
 
-            var newIdentifier = request.Identifier.Trim().ToLowerInvariant();
-            if (!IsValidIdentifier(newIdentifier))
-            {
-                return Results.BadRequest(new { error = "Identifier must be lowercase letters, numbers, and hyphens only." });
-            }
+                // InMemory provider:
+                // Bind a temporary context to the tenant being deleted
+                // so Finbuckle's EnforceMultiTenant accepts the removals.
+                await using var bound =
+                    MultiTenantDbContext.Create<AppDbContext, Tenant>(
+                        new Tenant
+                        {
+                            Id = tenant.Id
+                        },
+                        http.RequestServices);
 
-            if (newIdentifier != tenant.Identifier &&
-                await db.Tenants.AnyAsync(t => t.Identifier == newIdentifier))
-            {
-                return Results.BadRequest(new { error = "A tenant with this identifier already exists." });
-            }
+                var users = await bound.Users
+                    .IgnoreQueryFilters()
+                    .Where(u => u.TenantId == tenant.Id)
+                    .ToListAsync();
 
-            if (request.EnvelopeId is not null &&
-                !await db.Envelopes.AnyAsync(e => e.Id == request.EnvelopeId))
-            {
-                return Results.BadRequest(new { error = "The specified envelope does not exist." });
-            }
+                bound.Users.RemoveRange(users);
 
-            // Users store the tenant Id internally; keep it stable even if
-            // the display identifier changes.
-            tenant.Identifier = newIdentifier;
-            tenant.Name = request.Name.Trim();
-            tenant.EnvelopeId = request.EnvelopeId;
+                var refreshTokens = await bound.RefreshTokens
+                    .IgnoreQueryFilters()
+                    .Where(rt => rt.TenantId == tenant.Id)
+                    .ToListAsync();
 
-            await db.SaveChangesAsync();
+                bound.RefreshTokens.RemoveRange(refreshTokens);
 
-            return Results.Ok(tenant);
-        })
-        .WithName("AdminUpdateTenant");
+                await bound.SaveChangesAsync();
 
-        tenants.MapDelete("/{id}", async (string id, AppDbContext db, HttpContext http) =>
-        {
-            var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
-            if (tenant is null)
-            {
-                return Results.NotFound();
-            }
+                db.Tenants.Remove(tenant);
 
-            // Cascade: remove the tenant's users and refresh tokens, then the
-            // tenant itself. On PostgreSQL we use raw SQL (like the seed) to
-            // bypass Finbuckle's EnforceMultiTenant, which requires a tenant
-            // context that superadmin requests don't have.
-            if (db.Database.IsRelational())
-            {
-                await db.Database.ExecuteSqlRawAsync(
-                    "DELETE FROM \"Users\" WHERE \"TenantId\" = {0}", tenant.Id);
-                await db.Database.ExecuteSqlRawAsync(
-                    "DELETE FROM \"RefreshTokens\" WHERE \"TenantId\" = {0}", tenant.Id);
-                await db.Database.ExecuteSqlRawAsync(
-                    "DELETE FROM \"Tenants\" WHERE \"Id\" = {0}", tenant.Id);
+                await db.SaveChangesAsync();
+
                 return Results.NoContent();
-            }
+            })
+            .WithName("AdminDeleteTenant");
 
-            // InMemory provider: bind a throwaway context to the tenant being
-            // deleted so EnforceMultiTenant accepts the row removals.
-            await using var bound = MultiTenantDbContext.Create<AppDbContext, Tenant>(
-                new Tenant { Id = tenant.Id }, http.RequestServices);
-            bound.Users.RemoveRange(
-                await bound.Users.IgnoreQueryFilters().Where(u => u.TenantId == tenant.Id).ToListAsync());
-            bound.RefreshTokens.RemoveRange(
-                await bound.RefreshTokens.IgnoreQueryFilters().Where(rt => rt.TenantId == tenant.Id).ToListAsync());
-            await bound.SaveChangesAsync();
+        // ============================================================
+        // Envelope Management
+        // ============================================================
 
-            db.Tenants.Remove(tenant);
-            await db.SaveChangesAsync();
-
-            return Results.NoContent();
-        })
-        .WithName("AdminDeleteTenant");
-
-        // ─── Envelope management ───────────────────────────────────────
         var envelopes = app.MapGroup("/admin/envelopes")
             .RequireAuthorization("SuperAdminOnly");
 
-        envelopes.MapGet("/", async (AppDbContext db) =>
-        {
-            var result = await db.Envelopes
-                .AsNoTracking()
-                .Include(e => e.Roles)
-                .Select(e => new
-                {
-                    e.Id,
-                    e.Name,
-                    e.Description,
-                    e.CreatedAt,
-                    Roles = e.Roles.OrderBy(r => r.Name).Select(r => new
+        // ------------------------------------------------------------
+        // List Envelopes
+        // ------------------------------------------------------------
+
+        envelopes.MapGet(
+            "/",
+            async (AppDbContext db) =>
+            {
+                var result = await db.Envelopes
+                    .AsNoTracking()
+                    .Include(e => e.Roles)
+                    .Select(e => new
                     {
-                        r.Name,
-                        r.Actions
+                        e.Id,
+                        e.Name,
+                        e.Description,
+                        e.CreatedAt,
+
+                        Roles = e.Roles
+                            .OrderBy(r => r.Name)
+                            .Select(r => new
+                            {
+                                r.Name,
+                                r.Actions
+                            })
                     })
-                })
-                .OrderBy(e => e.Name)
-                .ToListAsync();
+                    .OrderBy(e => e.Name)
+                    .ToListAsync();
 
-            return Results.Ok(result);
-        })
-        .WithName("AdminListEnvelopes");
+                return Results.Ok(result);
+            })
+            .WithName("AdminListEnvelopes");
 
-        envelopes.MapPost("/", async (UpsertEnvelopeRequest request, AppDbContext db) =>
-        {
-            var error = ValidateEnvelopeRequest(request);
-            if (error is not null)
+        // ------------------------------------------------------------
+        // Create Envelope
+        // ------------------------------------------------------------
+
+        envelopes.MapPost(
+            "/",
+            async (
+                UpsertEnvelopeRequest request,
+                AppDbContext db) =>
             {
-                return Results.BadRequest(new { error });
-            }
+                var error = ValidateEnvelopeRequest(request);
 
-            var envelope = new Envelope
-            {
-                Name = request.Name.Trim(),
-                Description = request.Description?.Trim()
-            };
-
-            foreach (var role in request.Roles!)
-            {
-                envelope.Roles.Add(new AppRole
+                if (error is not null)
                 {
-                    Name = role.Name.Trim(),
-                    Actions = role.Actions.Select(a => a.Trim()).Distinct().ToList()
-                });
-            }
+                    return Results.BadRequest(
+                        new { error });
+                }
 
-            db.Envelopes.Add(envelope);
-            await db.SaveChangesAsync();
-
-            return Results.Created($"/admin/envelopes/{envelope.Id}", envelope);
-        })
-        .WithName("AdminCreateEnvelope");
-
-        envelopes.MapPut("/{id:guid}", async (Guid id, UpsertEnvelopeRequest request, AppDbContext db) =>
-        {
-            var envelope = await db.Envelopes
-                .Include(e => e.Roles)
-                .FirstOrDefaultAsync(e => e.Id == id);
-
-            if (envelope is null)
-            {
-                return Results.NotFound();
-            }
-
-            var error = ValidateEnvelopeRequest(request);
-            if (error is not null)
-            {
-                return Results.BadRequest(new { error });
-            }
-
-            envelope.Name = request.Name.Trim();
-            envelope.Description = request.Description?.Trim();
-
-            // Replace the role set wholesale (cascade deletes old roles).
-            db.AppRoles.RemoveRange(envelope.Roles);
-            foreach (var role in request.Roles!)
-            {
-                envelope.Roles.Add(new AppRole
+                var envelope = new Envelope
                 {
-                    EnvelopeId = envelope.Id,
-                    Name = role.Name.Trim(),
-                    Actions = role.Actions.Select(a => a.Trim()).Distinct().ToList()
-                });
-            }
+                    Name = request.Name.Trim(),
+                    Description = request.Description?.Trim()
+                };
 
-            await db.SaveChangesAsync();
+                foreach (var role in request.Roles!)
+                {
+                    envelope.Roles.Add(
+                        new AppRole
+                        {
+                            Name = role.Name.Trim(),
+                            Actions = role.Actions
+                                .Select(action => action.Trim())
+                                .Distinct()
+                                .ToList()
+                        });
+                }
 
-            return Results.Ok(envelope);
-        })
-        .WithName("AdminUpdateEnvelope");
+                db.Envelopes.Add(envelope);
 
-        envelopes.MapDelete("/{id:guid}", async (Guid id, AppDbContext db) =>
-        {
-            var envelope = await db.Envelopes.FirstOrDefaultAsync(e => e.Id == id);
-            if (envelope is null)
+                await db.SaveChangesAsync();
+
+                return Results.Created(
+                    $"/admin/envelopes/{envelope.Id}",
+                    envelope);
+            })
+            .WithName("AdminCreateEnvelope");
+
+        // ------------------------------------------------------------
+        // Update Envelope
+        // ------------------------------------------------------------
+
+        envelopes.MapPut(
+            "/{id:guid}",
+            async (
+                Guid id,
+                UpsertEnvelopeRequest request,
+                AppDbContext db) =>
             {
-                return Results.NotFound();
-            }
+                var envelope = await db.Envelopes
+                    .Include(e => e.Roles)
+                    .FirstOrDefaultAsync(e => e.Id == id);
 
-            // Unassign the envelope from any tenants that use it, then delete.
-            var assigned = await db.Tenants.Where(t => t.EnvelopeId == envelope.Id).ToListAsync();
-            foreach (var assignedTenant in assigned)
+                if (envelope is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var error = ValidateEnvelopeRequest(request);
+
+                if (error is not null)
+                {
+                    return Results.BadRequest(
+                        new { error });
+                }
+
+                envelope.Name = request.Name.Trim();
+                envelope.Description =
+                    request.Description?.Trim();
+
+                // Replace the entire role set.
+                db.AppRoles.RemoveRange(envelope.Roles);
+
+                foreach (var role in request.Roles!)
+                {
+                    envelope.Roles.Add(
+                        new AppRole
+                        {
+                            EnvelopeId = envelope.Id,
+                            Name = role.Name.Trim(),
+                            Actions = role.Actions
+                                .Select(action => action.Trim())
+                                .Distinct()
+                                .ToList()
+                        });
+                }
+
+                await db.SaveChangesAsync();
+
+                return Results.Ok(envelope);
+            })
+            .WithName("AdminUpdateEnvelope");
+
+        // ------------------------------------------------------------
+        // Delete Envelope
+        // ------------------------------------------------------------
+
+        envelopes.MapDelete(
+            "/{id:guid}",
+            async (
+                Guid id,
+                AppDbContext db) =>
             {
-                assignedTenant.EnvelopeId = null;
-            }
+                var envelope = await db.Envelopes
+                    .FirstOrDefaultAsync(e => e.Id == id);
 
-            db.Envelopes.Remove(envelope);
-            await db.SaveChangesAsync();
+                if (envelope is null)
+                {
+                    return Results.NotFound();
+                }
 
-            return Results.NoContent();
-        })
-        .WithName("AdminDeleteEnvelope");
+                // Unassign the envelope from all tenants using it
+                // before deleting the envelope itself.
+                var assignedTenants = await db.Tenants
+                    .Where(t => t.EnvelopeId == envelope.Id)
+                    .ToListAsync();
+
+                foreach (var tenant in assignedTenants)
+                {
+                    tenant.EnvelopeId = null;
+                }
+
+                db.Envelopes.Remove(envelope);
+
+                await db.SaveChangesAsync();
+
+                return Results.NoContent();
+            })
+            .WithName("AdminDeleteEnvelope");
     }
 
-    // ─── Helpers ─────────────────────────────────────────────────────
+    // ================================================================
+    // Helpers
+    // ================================================================
 
-    private static bool IsValidIdentifier(string identifier) =>
-        !string.IsNullOrWhiteSpace(identifier) &&
-        identifier.Length <= 200 &&
-        identifier.All(c => char.IsAsciiLetterLower(c) || char.IsDigit(c) || c == '-');
+    private static bool IsValidIdentifier(string identifier)
+    {
+        return !string.IsNullOrWhiteSpace(identifier) &&
+               identifier.Length <= 200 &&
+               identifier.All(
+                   character =>
+                       char.IsAsciiLetterLower(character) ||
+                       char.IsDigit(character) ||
+                       character == '-');
+    }
 
-    private static string? ValidateEnvelopeRequest(UpsertEnvelopeRequest request)
+    private static string? ValidateEnvelopeRequest(
+        UpsertEnvelopeRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
         {
@@ -301,16 +493,22 @@ public static class AdminEndpoints
             return "An envelope must contain at least one role.";
         }
 
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenRoleNames =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
         foreach (var role in request.Roles)
         {
             if (string.IsNullOrWhiteSpace(role.Name))
             {
                 return "Role names cannot be empty.";
             }
-            if (!seen.Add(role.Name.Trim()))
+
+            var roleName = role.Name.Trim();
+
+            if (!seenRoleNames.Add(roleName))
             {
-                return $"Duplicate role name: {role.Name.Trim()}";
+                return $"Duplicate role name: {roleName}";
             }
         }
 
@@ -318,9 +516,25 @@ public static class AdminEndpoints
     }
 }
 
-// ─── Request DTOs ──────────────────────────────────────────────────
+// ================================================================
+// Request DTOs
+// ================================================================
 
-public record CreateTenantRequest(string Identifier, string Name, Guid? EnvelopeId = null);
-public record UpdateTenantRequest(string Identifier, string Name, Guid? EnvelopeId = null);
-public record UpsertEnvelopeRequest(string Name, string? Description, List<RoleRequest> Roles);
-public record RoleRequest(string Name, List<string> Actions);
+public record CreateTenantRequest(
+    string Identifier,
+    string Name,
+    Guid? EnvelopeId = null);
+
+public record UpdateTenantRequest(
+    string Identifier,
+    string Name,
+    Guid? EnvelopeId = null);
+
+public record UpsertEnvelopeRequest(
+    string Name,
+    string? Description,
+    List<RoleRequest> Roles);
+
+public record RoleRequest(
+    string Name,
+    List<string> Actions);

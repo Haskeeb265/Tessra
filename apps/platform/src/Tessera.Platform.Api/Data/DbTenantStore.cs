@@ -1,5 +1,7 @@
 using Finbuckle.MultiTenant.Abstractions;
+
 using Microsoft.EntityFrameworkCore;
+
 using Tessera.Platform.Domain.Models;
 
 namespace Tessera.Platform.Api.Data;
@@ -19,12 +21,15 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
         _scopeFactory = scopeFactory;
     }
 
-    public async Task<Tenant?> GetAsync(string id) => await GetByIdAsync(id);
+    public async Task<Tenant?> GetAsync(string id) =>
+        await GetByIdAsync(id);
 
     public async Task<Tenant?> GetByIdentifierAsync(string identifier)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
         return await db.Tenants
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Identifier == identifier);
@@ -33,7 +38,9 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
     public async Task<Tenant?> GetByIdAsync(string id)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
         return await db.Tenants
             .AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == id);
@@ -42,46 +49,70 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
     public async Task<IEnumerable<Tenant>> GetAllAsync()
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        return await db.Tenants.AsNoTracking().ToListAsync();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        return await db.Tenants
+            .AsNoTracking()
+            .ToListAsync();
     }
 
-    public async Task<IEnumerable<Tenant>> GetAllAsync(int start, int pageSize)
+    public async Task<IEnumerable<Tenant>> GetAllAsync(
+        int start,
+        int pageSize)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        return await db.Tenants.AsNoTracking().Skip(start).Take(pageSize).ToListAsync();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        return await db.Tenants
+            .AsNoTracking()
+            .Skip(start)
+            .Take(pageSize)
+            .ToListAsync();
     }
 
     public async Task<bool> AddAsync(Tenant tenant)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
         db.Tenants.Add(tenant);
         await db.SaveChangesAsync();
+
         return true;
     }
 
     public async Task<bool> UpdateAsync(Tenant tenant)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
         db.Tenants.Update(tenant);
         await db.SaveChangesAsync();
+
         return true;
     }
 
     public async Task<bool> RemoveAsync(string id)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var tenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == id);
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        var tenant = await db.Tenants
+            .FirstOrDefaultAsync(t => t.Id == id);
+
         if (tenant is null)
         {
             return false;
         }
+
         db.Tenants.Remove(tenant);
         await db.SaveChangesAsync();
+
         return true;
     }
 }

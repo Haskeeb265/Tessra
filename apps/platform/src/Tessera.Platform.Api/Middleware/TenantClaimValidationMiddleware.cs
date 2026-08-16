@@ -1,27 +1,29 @@
 using System.Diagnostics;
 using System.Security.Claims;
+
 using Tessera.Platform.Domain.Models;
 
 namespace Tessera.Platform.Api.Middleware;
 
 /// <summary>
-/// Middleware that runs after authentication and validates that the
-/// <c>tenant_identifier</c> claim in the JWT matches the <c>X-Tenant-Id</c>
-/// request header.
+/// Validates that the tenant identifier in the authenticated JWT
+/// matches the <c>X-Tenant-Id</c> request header.
 ///
-/// IMPORTANT: We compare against the <c>tenant_identifier</c> claim (not
-/// <c>tenant_id</c>) because the JWT stores the external identifier
-/// (e.g. "alpha-corp") in that claim, which is the same value the client
-/// sends in the X-Tenant-Id header. The <c>tenant_id</c> claim holds the
-/// internal database ID (e.g. "alpha"), which would never match the header.
+/// The JWT contains two tenant-related claims:
+/// - <c>tenant_identifier</c>: External tenant identifier (e.g. "alpha-corp")
+/// - <c>tenant_id</c>: Internal database identifier (e.g. "alpha")
 ///
-/// This prevents a cross-tenant token attack: a user who obtains a valid
-/// JWT for Tenant A cannot reuse it to access Tenant B's data by simply
-/// changing the X-Tenant-Id header.
+/// This middleware compares <c>tenant_identifier</c> with the
+/// <c>X-Tenant-Id</c> header because they represent the same external
+/// tenant identifier.
 ///
-/// If the values don't match, a 403 Forbidden is returned immediately.
-/// Unauthenticated requests (no JWT) are passed through — the
-/// authorization middleware handles those.
+/// This prevents cross-tenant token attacks where a valid JWT issued
+/// for Tenant A is reused with a different <c>X-Tenant-Id</c> header
+/// to attempt access to Tenant B's data.
+///
+/// Unauthenticated requests are passed through so that the authorization
+/// middleware can handle protected endpoints and return the appropriate
+/// 401 response.
 /// </summary>
 public class TenantClaimValidationMiddleware
 {
@@ -34,34 +36,50 @@ public class TenantClaimValidationMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // If the request is not authenticated (no valid JWT), there's nothing
-        // to validate. The authorization middleware (which runs next) will
-        // handle protected endpoints by returning 401.
+        // Nothing to validate if the request is unauthenticated.
+        // Authorization middleware will handle protected endpoints.
         if (context.User.Identity?.IsAuthenticated == true)
         {
-            // Compare tenant_identifier (external name like "alpha-corp")
-            // against the header, NOT tenant_id (internal ID like "alpha").
-            var tokenTenantId = context.User.FindFirstValue("tenant_identifier");
-            var headerTenantId = context.Request.Headers["X-Tenant-Id"].FirstOrDefault();
+            var tokenTenantIdentifier =
+                context.User.FindFirstValue("tenant_identifier");
 
-            // Both should be present at this point — the JWT was issued with
-            // tenant_id, and the TenantValidationMiddleware already enforced
-            // that X-Tenant-Id exists. This is a defence-in-depth check.
-            if (!string.IsNullOrEmpty(tokenTenantId) &&
-                !string.IsNullOrEmpty(headerTenantId) &&
-                !string.Equals(tokenTenantId, headerTenantId, StringComparison.OrdinalIgnoreCase))
+            var headerTenantIdentifier =
+                context.Request.Headers["X-Tenant-Id"]
+                    .FirstOrDefault();
+
+            // Both values should normally be present:
+            // - The JWT is issued with a tenant_identifier claim.
+            // - TenantValidationMiddleware ensures X-Tenant-Id exists.
+            //
+            // This additional check provides defense in depth.
+            var tenantsMatch =
+                !string.IsNullOrEmpty(tokenTenantIdentifier) &&
+                !string.IsNullOrEmpty(headerTenantIdentifier) &&
+                string.Equals(
+                    tokenTenantIdentifier,
+                    headerTenantIdentifier,
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (!tenantsMatch)
             {
                 var response = new ApiErrorResponse
                 {
                     StatusCode = StatusCodes.Status403Forbidden,
-                    Message = "The tenant in your authentication token does not match the tenant specified in the X-Tenant-Id header.",
-                    TraceId = Activity.Current?.Id ?? context.TraceIdentifier,
+                    Message =
+                        "The tenant in your authentication token does not " +
+                        "match the tenant specified in the X-Tenant-Id header.",
+                    TraceId =
+                        Activity.Current?.Id
+                        ?? context.TraceIdentifier,
                     Timestamp = DateTime.UtcNow
                 };
 
                 context.Response.ContentType = "application/json";
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.StatusCode =
+                    StatusCodes.Status403Forbidden;
+
                 await context.Response.WriteAsJsonAsync(response);
+
                 return;
             }
         }

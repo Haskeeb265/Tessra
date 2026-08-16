@@ -1,16 +1,23 @@
 using System.Text;
+
+using Finbuckle.MultiTenant.AspNetCore.Extensions;
+using Finbuckle.MultiTenant.Extensions;
 using Serilog;
+
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using Finbuckle.MultiTenant.Extensions;
-using Finbuckle.MultiTenant.AspNetCore.Extensions;
+
 using Tessera.Platform.Api.Data;
 using Tessera.Platform.Api.Endpoints;
 using Tessera.Platform.Api.Middleware;
 using Tessera.Platform.Api.Services;
 using Tessera.Platform.Domain.Models;
 using Tessera.Platform.Observability.Middleware;
+
+// ============================================================
+// Logging Bootstrap
+// ============================================================
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -21,28 +28,43 @@ try
 {
     var builder = WebApplication.CreateBuilder(args);
 
-    // Configure Serilog as the logging provider for the entire application
-    builder.Host.UseSerilog();   
-    
+    // Configure Serilog as the logging provider for the entire application.
+    builder.Host.UseSerilog();
+
+    // ============================================================
+    // Multi-Tenancy
+    // ============================================================
+
     // Tenants live in the database (Tenants table) so superadmins can create
     // them at runtime. The default alpha/beta tenants are seeded on startup.
     builder.Services.AddMultiTenant<Tenant>()
         .WithHeaderStrategy("X-Tenant-Id")
         .WithStore<DbTenantStore>(ServiceLifetime.Singleton);
 
-    // Use PostgreSQL if a connection string is configured, otherwise fall back to InMemory
-    // for local development without Docker.
-    var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+    // ============================================================
+    // Database
+    // ============================================================
+
+    // Use PostgreSQL if a connection string is configured, otherwise fall
+    // back to InMemory for local development without Docker.
+    var connectionString = builder.Configuration
+        .GetConnectionString("DefaultConnection");
+
     if (!string.IsNullOrEmpty(connectionString))
     {
-        builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        builder.Services.AddDbContext<AppDbContext>(
+            options => options.UseNpgsql(connectionString));
     }
     else
     {
-        builder.Services.AddDbContext<AppDbContext>(options => options.UseInMemoryDatabase("TesseraPlatformDb"));
+        builder.Services.AddDbContext<AppDbContext>(
+            options => options.UseInMemoryDatabase("TesseraPlatformDb"));
     }
 
-    // Configure JWT authentication
+    // ============================================================
+    // Authentication & Authorization
+    // ============================================================
+
     var jwtSettings = builder.Configuration.GetSection("Jwt");
     var secretKey = jwtSettings["SecretKey"]!;
     var issuer = jwtSettings["Issuer"]!;
@@ -63,7 +85,8 @@ try
             ValidateIssuerSigningKey = true,
             ValidIssuer = issuer,
             ValidAudience = audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(secretKey)),
             ClockSkew = TimeSpan.Zero
         };
     });
@@ -76,10 +99,17 @@ try
             policy.RequireRole(Roles.SuperAdmin));
     });
 
-    // Register application services
+    // ============================================================
+    // Application Services
+    // ============================================================
+
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<AuthService>();
     builder.Services.AddScoped<AdminAuthService>();
+
+    // ============================================================
+    // CORS
+    // ============================================================
 
     // Allow both frontends (apps/web tenant portal on :3000 and the
     // apps/platform-portal superadmin portal on :3001) to call this API.
@@ -89,11 +119,15 @@ try
             policy.WithOrigins(
                     "http://localhost:3000", "https://localhost:3000",
                     "http://localhost:3001", "https://localhost:3001")
-                  .AllowAnyHeader()
-                  .AllowAnyMethod());
+                .AllowAnyHeader()
+                .AllowAnyMethod());
     });
 
     builder.Services.AddOpenApi();
+
+    // ============================================================
+    // Request Pipeline
+    // ============================================================
 
     var app = builder.Build();
 
@@ -114,7 +148,7 @@ try
     // CORS middleware instead of being rejected for a missing X-Tenant-Id.
     app.UseCors("WebApp");
 
-    // Validate X-Tenant-Id header before tenant resolution
+    // Validate X-Tenant-Id header before tenant resolution.
     app.UseMiddleware<TenantValidationMiddleware>();
 
     app.UseMultiTenant();
@@ -129,27 +163,39 @@ try
 
     app.UseAuthorization();
 
-    app.MapGet("/health", () =>
-    {
-        return Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow });
-    })
-    .WithName("HealthCheck");
+    // ============================================================
+    // Endpoints
+    // ============================================================
+
+    app.MapGet(
+        "/health",
+        () => Results.Ok(
+            new { status = "healthy", timestamp = DateTime.UtcNow }))
+        .WithName("HealthCheck");
 
     // Public endpoint the frontends use to populate the workspace picker.
-    app.MapGet("/tenants", async (AppDbContext db) =>
-    {
-        var result = await db.Tenants.AsNoTracking()
-            .OrderBy(t => t.Name)
-            .Select(t => new { id = t.Identifier, name = t.Name })
-            .ToListAsync();
-        return Results.Ok(result);
-    })
-    .WithName("PublicListTenants");
+    app.MapGet(
+        "/tenants",
+        async (AppDbContext db) =>
+        {
+            var result = await db.Tenants
+                .AsNoTracking()
+                .OrderBy(t => t.Name)
+                .Select(t => new { id = t.Identifier, name = t.Name })
+                .ToListAsync();
+
+            return Results.Ok(result);
+        })
+        .WithName("PublicListTenants");
 
     app.MapWidgetEndpoints();
     app.MapAuthEndpoints();
     app.MapTenantEndpoints();
     app.MapAdminEndpoints();
+
+    // ============================================================
+    // Database Seeding
+    // ============================================================
 
     // Seed platform-level data (tenants, envelopes, superadmin). These
     // entities are NOT multi-tenant, so EF Core can seed them on either
@@ -172,14 +218,18 @@ try
         // EnforceMultiTenant requires a TenantInfo context that doesn't exist
         // during startup (no HTTP request). Raw SQL bypasses the EF Core
         // change tracker and EnforceMultiTenant entirely.
-        if (db.Database.IsRelational() && !await db.Users.IgnoreQueryFilters().AnyAsync())
+        if (db.Database.IsRelational() &&
+            !await db.Users.IgnoreQueryFilters().AnyAsync())
         {
             var seedSection = app.Configuration.GetSection("SeedAdmin");
             var seedEmail = seedSection["Email"]!;
             var seedPassword = seedSection["Password"]!;
 
             var passwordHash = BCrypt.Net.BCrypt.HashPassword(seedPassword);
-            var tenantIds = await db.Tenants.AsNoTracking().Select(t => t.Id).ToListAsync();
+            var tenantIds = await db.Tenants
+                .AsNoTracking()
+                .Select(t => t.Id)
+                .ToListAsync();
 
             foreach (var tenantId in tenantIds)
             {
@@ -198,7 +248,8 @@ try
 
             Log.Information(
                 "Seeded admin user ({Email}) for {TenantCount} tenant(s) via raw SQL",
-                seedEmail, tenantIds.Count);
+                seedEmail,
+                tenantIds.Count);
         }
     }
 
@@ -206,7 +257,9 @@ try
 
     // Seeds platform-level data (not tenant-scoped) so both the in-memory
     // and PostgreSQL providers start with working defaults.
-    static async Task SeedPlatformDataAsync(AppDbContext db, IConfiguration configuration)
+    static async Task SeedPlatformDataAsync(
+        AppDbContext db,
+        IConfiguration configuration)
     {
         // Default envelope: roles + the actions each role is allowed.
         // Actions are informational for now — enforcement is on the backlog.
@@ -223,43 +276,69 @@ try
                         Name = Roles.Admin,
                         Actions =
                         [
-                            ActionCatalog.ManageUsers, ActionCatalog.CreateWidget,
-                            ActionCatalog.EditWidget, ActionCatalog.DeleteWidget
+                            ActionCatalog.ManageUsers,
+                            ActionCatalog.CreateWidget,
+                            ActionCatalog.EditWidget,
+                            ActionCatalog.DeleteWidget
                         ]
                     },
                     new AppRole
                     {
                         Name = "Manager",
-                        Actions = [ActionCatalog.CreateWidget, ActionCatalog.EditWidget]
+                        Actions =
+                        [
+                            ActionCatalog.CreateWidget,
+                            ActionCatalog.EditWidget
+                        ]
                     },
                     new AppRole
                     {
                         Name = Roles.User,
-                        Actions = [ActionCatalog.ViewWidgets]
+                        Actions =
+                        [
+                            ActionCatalog.ViewWidgets
+                        ]
                     }
                 ]
             });
             await db.SaveChangesAsync();
         }
 
-        var standard = await db.Envelopes.FirstOrDefaultAsync(e => e.Name == "Standard");
+        var standard = await db.Envelopes
+            .FirstOrDefaultAsync(e => e.Name == "Standard");
 
         // Default tenants (the original hardcoded ones, now in the database).
         if (!await db.Tenants.AnyAsync())
         {
             db.Tenants.AddRange(
-                new Tenant { Id = "alpha", Identifier = "alpha-corp", Name = "Alpha Corp", EnvelopeId = standard?.Id },
-                new Tenant { Id = "beta", Identifier = "beta-industries", Name = "Beta Industries", EnvelopeId = standard?.Id });
+                new Tenant
+                {
+                    Id = "alpha",
+                    Identifier = "alpha-corp",
+                    Name = "Alpha Corp",
+                    EnvelopeId = standard?.Id
+                },
+                new Tenant
+                {
+                    Id = "beta",
+                    Identifier = "beta-industries",
+                    Name = "Beta Industries",
+                    EnvelopeId = standard?.Id
+                });
             await db.SaveChangesAsync();
         }
         else
         {
             // Assign the standard envelope to any tenant that doesn't have one.
-            var unassigned = await db.Tenants.Where(t => t.EnvelopeId == null).ToListAsync();
+            var unassigned = await db.Tenants
+                .Where(t => t.EnvelopeId == null)
+                .ToListAsync();
+
             foreach (var tenant in unassigned)
             {
                 tenant.EnvelopeId = standard?.Id;
             }
+
             if (unassigned.Count > 0)
             {
                 await db.SaveChangesAsync();
@@ -272,6 +351,7 @@ try
             var section = configuration.GetSection("SeedSuperAdmin");
             var email = section["Email"] ?? "superadmin@tessera.com";
             var password = section["Password"] ?? "Admin123!";
+
             db.AdminUsers.Add(new AdminUser
             {
                 Email = email,

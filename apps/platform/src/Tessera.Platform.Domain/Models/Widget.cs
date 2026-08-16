@@ -1,5 +1,8 @@
 namespace Tessera.Platform.Domain.Models;
 
+/// <summary>
+/// A tenant-scoped widget managed through the business portal.
+/// </summary>
 public class Widget
 {
     public Guid Id { get; set; } = Guid.NewGuid();
