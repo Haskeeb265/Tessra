@@ -225,7 +225,7 @@ erDiagram
 - **Delete tenant** → hard-deletes the tenant's `Widgets`, `RefreshTokens`, and `Invitations`; **soft-deletes** its `Users` (`IsDeleted`, `RoleId = NULL`) and the `Tenant` row itself (B1/B4). PostgreSQL uses raw SQL (bypasses `EnforceMultiTenant`); InMemory uses `MultiTenantDbContext.Create<TContext,TTenantInfo>` bound to the deleted tenant.
 - **Delete envelope** → first **unassigns** it from all tenants (`Tenant.EnvelopeId = null`), then deletes the envelope and its roles (cascade). Tenant role copies are untouched.
 
-Migrations: `InitialCreate` (Widgets) → `AddAuthTables` (Users, RefreshTokens) → `AddUserRole` (Role column) → `AddPlatformAdmin` (Tenants, Envelopes, AppRoles, AdminUsers + `Tenant.EnvelopeId`) → `TenantOwnedRolesAndSecurity` (TenantRoles, Invitations; `Users.RoleId` backfilled from `Role` then dropped; `TokenVersion`/soft-delete/email-verify/MFA columns; `RefreshTokens.FamilyId`; `Tenants.Status`/`IsDeleted`; filtered unique `(Email, TenantId)` index; `xmin` rowversions). Applied on startup gated by `Database:AutoMigrate` and `IsRelational()`.
+Migrations: a single `InitialCreate` migration holds the entire current schema (the dev migration history was squashed). Applied on startup gated by `Database:AutoMigrate` and `IsRelational()`.
 
 ### 5.3 Middleware pipeline (exact order)
 

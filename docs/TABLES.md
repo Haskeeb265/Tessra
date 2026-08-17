@@ -188,9 +188,4 @@ Created and managed by EF Core — records which migrations have been applied. N
 
 | Migration | Adds |
 |---|---|
-| `20260727155941_InitialCreate` | `Widgets` |
-| `20260727161156_AddAuthTables` | `Users`, `RefreshTokens` |
-| `20260728124717_AddUserRole` | `Role` column on `Users` |
-| `20260813120719_AddPlatformAdmin` | `AdminUsers`, `Envelopes`, `Tenants`, `AppRoles` |
-| `20260816232436_TenantOwnedRolesAndSecurity` | `TenantRoles`, `Invitations`; `Users.RoleId`/`TokenVersion`/`IsDeleted`/email-verify/MFA columns (backfilled from `Role`, then dropped); `RefreshTokens.FamilyId`; `Tenants.Status`/`IsDeleted`; filtered unique `(Email, TenantId)` index; `xmin` rowversion columns |
-| `20260817002003_TenantSuperadminRole` | `TenantRoles.IsSystem` + backfills the platform-managed `Superadmin` role (all actions) into every existing tenant |
+| `20260817035321_InitialCreate` | The full current schema in one shot (development history was squashed): `AdminUsers`, `Envelopes`, `AppRoles`, `Tenants`, `TenantRoles` (incl. `IsSystem`), `Users` (incl. `RoleId`/`TokenVersion`/soft-delete/email-verify/MFA/`xmin`), `RefreshTokens` (incl. `FamilyId`), `Invitations`, `Widgets`; filtered unique `(Email, TenantId) WHERE NOT IsDeleted` index |

@@ -13,8 +13,8 @@ using Tessera.Platform.Api.Data;
 namespace Tessera.Platform.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260816232436_TenantOwnedRolesAndSecurity")]
-    partial class TenantOwnedRolesAndSecurity
+    [Migration("20260817035321_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -249,6 +249,9 @@ namespace Tessera.Platform.Api.Migrations
 
                     b.Property<Guid?>("EnvelopeRoleId")
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("IsSystem")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Name")
                         .IsRequired()

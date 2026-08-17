@@ -55,7 +55,7 @@
 
 | # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| D1 | ✅ | Race condition on email uniqueness | Filtered unique index `(Email, TenantId) WHERE NOT IsDeleted` (migration `TenantOwnedRolesAndSecurity`) closes the two-concurrent-registrations race; soft-deleted accounts don't block email reuse. |
+| D1 | ✅ | Race condition on email uniqueness | Filtered unique index `(Email, TenantId) WHERE NOT IsDeleted` (created in the initial migration) closes the two-concurrent-registrations race; soft-deleted accounts don't block email reuse. |
 | D2 | ✅ | Last-write-wins on shared edits | Optimistic concurrency via the Postgres `xmin` system column on `Users`, `Tenants`, `TenantRoles`, and `Envelopes`/`AppRoles`; `DbUpdateConcurrencyException` → **409 Conflict** on tenant/envelope/role edits. |
 | D3 | ⚠️ | Provider divergence (InMemory vs Postgres) | Raw-SQL branches (seed/delete) still differ between providers. Both paths are exercised by integration tests where feasible; standardizing on Postgres for all environments remains a goal. |
 | D4 | ❌ | No audit trail | Not implemented. P2 — nothing records who changed which envelope/tenant/role when. |
