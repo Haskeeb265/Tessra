@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { DEFAULT_TENANT_ID, login } from "@/lib/api";
+import { DEFAULT_TENANT_ID, completeMfaLogin, login } from "@/lib/api";
 import { Alert, Button, Card, Field, TextInput } from "@/components/ui";
 import { TenantPicker } from "@/components/tenant-picker";
 
@@ -14,18 +14,42 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await login(email, password, tenantId);
+      const token = await login(email, password, tenantId);
+      if (token) {
+        setMfaToken(token);
+        return;
+      }
       router.push("/dashboard");
       router.refresh();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Could not log in. Is the platform running?",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleMfaSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!mfaToken) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await completeMfaLogin(mfaToken, mfaCode, tenantId, email);
+      router.push("/dashboard");
+      router.refresh();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Invalid authentication code.",
       );
     } finally {
       setSubmitting(false);
@@ -40,9 +64,13 @@ export default function LoginPage() {
             ☕
           </div>
           <h1 className="mt-2 font-serif text-3xl font-bold text-espresso">
-            Welcome back
+            {mfaToken ? "Two-factor authentication" : "Welcome back"}
           </h1>
-          <p className="mt-1 text-sm text-mocha">Log in to your workspace</p>
+          <p className="mt-1 text-sm text-mocha">
+            {mfaToken
+              ? "Enter the 6-digit code from your authenticator app"
+              : "Log in to your workspace"}
+          </p>
         </div>
 
         {error && (
@@ -51,32 +79,64 @@ export default function LoginPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <TenantPicker value={tenantId} onChange={setTenantId} />
-          <Field label="Email">
-            <TextInput
-              type="email"
-              required
-              autoComplete="email"
-              placeholder="you@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </Field>
-          <Field label="Password">
-            <TextInput
-              type="password"
-              required
-              autoComplete="current-password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </Field>
-          <Button type="submit" disabled={submitting} className="mt-2 w-full">
-            {submitting ? "Logging in…" : "Log in"}
-          </Button>
-        </form>
+        {mfaToken ? (
+          <form onSubmit={handleMfaSubmit} className="flex flex-col gap-4">
+            <Field label="Authentication code">
+              <TextInput
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                placeholder="123456"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+              />
+            </Field>
+            <Button
+              type="submit"
+              disabled={submitting || mfaCode.length !== 6}
+              className="mt-2 w-full"
+            >
+              {submitting ? "Verifying…" : "Verify"}
+            </Button>
+            <button
+              type="button"
+              onClick={() => {
+                setMfaToken(null);
+                setMfaCode("");
+              }}
+              className="text-center text-xs font-semibold text-caramel hover:underline"
+            >
+              Back to login
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <TenantPicker value={tenantId} onChange={setTenantId} />
+            <Field label="Email">
+              <TextInput
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="you@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+            <Field label="Password">
+              <TextInput
+                type="password"
+                required
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+            <Button type="submit" disabled={submitting} className="mt-2 w-full">
+              {submitting ? "Logging in…" : "Log in"}
+            </Button>
+          </form>
+        )}
 
         <p className="mt-6 text-center text-sm text-mocha">
           New here?{" "}

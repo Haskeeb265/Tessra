@@ -142,6 +142,20 @@ export async function deleteTenant(id: string): Promise<void> {
   return apiFetch<void>(`/admin/tenants/${id}`, { method: "DELETE" });
 }
 
+/**
+ * Invites someone into a tenant. The first invite redeemed in a workspace
+ * becomes its platform-managed Superadmin; later invites default to Admin.
+ */
+export async function inviteTenantUser(
+  id: string,
+  email: string,
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(`/admin/tenants/${id}/invites`, {
+    method: "POST",
+    body: { email },
+  });
+}
+
 // ─── Envelopes ──────────────────────────────────────────────────────
 
 export interface EnvelopeRole {

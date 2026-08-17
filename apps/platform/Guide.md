@@ -47,8 +47,10 @@ dotnet run --project src/Tessera.Platform.Api   # → http://localhost:5085
 With no connection string, the API uses the **in-memory database**:
 
 - Data is **ephemeral** — it resets on every restart.
-- There is **no seeded tenant admin** (`admin@tessera.com` is Postgres-only) —
-  register an account instead; the **first user in a workspace becomes its Admin**.
+- There is **no seeded tenant admin** (`admin@tessera.com` is Postgres-only).
+- Registration is **invite-only**: in the platform portal, invite a user into a
+  tenant (`Tenants → Invite`) — the **first invite redeemed becomes the
+  workspace's Superadmin**.
 - `superadmin@tessera.com` *is* seeded on both providers.
 
 ---
@@ -124,9 +126,12 @@ The full endpoint table (every route + its auth requirement) is in
 
 **Business portal** (`http://localhost:3000`):
 1. Log in as `admin@tessera.com` (workspace **Alpha Corp**) — you're the workspace Admin.
-2. Create/edit widgets on the dashboard; note the "your role allows" action pills.
-3. Open **Team** → add a user with a role from the workspace's envelope, change roles, remove a user.
-4. Register a second account in a different workspace (e.g. Beta Industries) and confirm you can't see Alpha's widgets.
+2. Create/edit widgets on the dashboard; note the "your role allows" action pills (driven by `/tenant/me` actions).
+3. Open **Team** → invite a user by email (role-bound link), list/change roles, remove a user; manage the workspace's roles under **Roles**. (The platform-managed **Superadmin** role is fixed and can't be edited or assigned by the tenant.)
+4. In a different workspace (e.g. Beta Industries) invite + redeem a second account and confirm you can't see Alpha's widgets.
+5. Optional MFA: on the dashboard, enroll TOTP — the next login will ask for a code.
+
+Email features (invitations, password reset, verification) print to the API console via the pluggable `IEmailSender` until a real provider is configured.
 
 **Platform portal** (`http://localhost:3001`):
 1. Log in as `superadmin@tessera.com`.
@@ -140,7 +145,8 @@ The full endpoint table (every route + its auth requirement) is in
 ```bash
 # C# platform
 cd apps/platform
-dotnet build                                          # build all 3 projects
+dotnet build                                          # build all projects
+dotnet test src/Tessera.Platform.Tests                # run the test suite (xUnit + WebApplicationFactory)
 dotnet ef migrations add <Name> --project src/Tessera.Platform.Api   # new migration
 dotnet run --project src/Tessera.Platform.Api        # local InMemory dev
 
@@ -149,6 +155,11 @@ cd apps/web && npm run build && npm run lint
 cd apps/platform-portal && npm run build && npm run lint
 ```
 
+**Migrations note**: `Database:AutoMigrate` (default `true` for dev) applies
+migrations on startup. Set `Database__AutoMigrate=false` in production and
+run `dotnet ef database update` as an explicit deploy step (see
+`docs/multitenant_mature.md` E3).
+
 ---
 
 ## Where things live (details in ARCHITECTURE.md)
@@ -156,9 +167,10 @@ cd apps/platform-portal && npm run build && npm run lint
 | Concern | Location |
 |---|---|
 | Endpoints (widgets / auth / tenant / admin) | `src/Tessera.Platform.Api/Endpoints/` |
-| Middleware (exception / tenant validation / tenant-claim) | `src/Tessera.Platform.Api/Middleware/` |
-| Services (AuthService, AdminAuthService) | `src/Tessera.Platform.Api/Services/` |
+| Middleware (exception / tenant validation / tenant-claim / suspension / token-version) | `src/Tessera.Platform.Api/Middleware/` |
+| Services (AuthService, AdminAuthService, ActionChecks, TotpService, EmailSender, TenantRoleSeeder, AuthHelpers) | `src/Tessera.Platform.Api/Services/` |
 | Data (AppDbContext, DbTenantStore, migrations) | `src/Tessera.Platform.Api/Data/` |
+| Tests (auth flows, isolation, lifecycle) | `src/Tessera.Platform.Tests/` |
 | Domain models + constants | `src/Tessera.Platform.Domain/Models/` |
 | Shared middleware | `src/Tessera.Platform.Observability/` |
 | Wiring / pipeline / seeding | `src/Tessera.Platform.Api/Program.cs` |

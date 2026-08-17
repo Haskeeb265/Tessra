@@ -9,6 +9,8 @@ services:
       - ASPNETCORE_ENVIRONMENT=Docker
       - ASPNETCORE_URLS=http://+:8080
       - ConnectionStrings__DefaultConnection=Host=db;Database=tessera_platform;Username=postgres;Password=postgres
+      # Dev-only signing key; production must set Jwt__SecretKey from a secrets manager.
+      - Jwt__SecretKey=Tessera-Docker-Secret-Key-Min-32-Chars!!
     depends_on:
       db:
         condition: service_healthy

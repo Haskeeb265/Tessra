@@ -6,92 +6,92 @@
 
 - **Status** — `✅` implemented and solid · `⚠️` implemented but partial/has edge cases · `❌` missing
 - **Priority** — **P0** blocks a production launch · **P1** should ship before real customers · **P2** later, once the core is solid
-- Each item notes where it lives in the code today and a suggested approach.
+- Each item notes where it lives in the code today.
 
 ---
 
-## A. Roles, actions & the envelope cascade (P0)
+## A. Roles, actions & the envelope (P0)
 
-**The core problem:** a user's `Role` is stored as a **string** (`User.Role`), but roles and actions now live in `Envelopes` → `AppRoles`. When a superadmin edits or deletes an envelope, nothing propagates to existing tenant users.
+**Design (implemented):** the envelope is now a **template**, not a live binding. When a superadmin assigns an envelope to a tenant, its roles are **copied** into the tenant's own role set (`TenantRoles`); the tenant owns and edits its copies. `User.Role` (a string) was replaced by `User.RoleId` (FK → `TenantRoles.Id`), and authorization is **action-based** (`ActionChecks`), resolved from the tenant role at request time — so renames never break permissions, and envelope edits never cascade into tenant data.
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| A1 | ❌ | **Envelope role rename doesn't cascade** | A renamed `AppRole` leaves existing users with the old role string. `/tenant/me` finds no matching role and returns an **empty actions list** — the UI silently loses permissions. Fix: resolve at request time with a defined fallback (see A3), or store `RoleId` (FK to `AppRole`) instead of the name. |
-| A2 | ❌ | **Envelope role deletion strands users** | Deleting a role from an envelope breaks existing users (same empty-actions symptom) while `GetAllowedRolesAsync` already prevents *new* assignments to it. Same fix as A1; deleted-role users need an explicit fallback. |
-| A3 | ⚠️ | **No defined fallback when a user's role no longer matches the envelope** | `/tenant/me` (`TenantEndpoints`) does a live lookup (`role?.Actions`) and returns empty actions on mismatch. Never return *silently empty*: deny-by-default with a clear signal, or fall back to a built-in minimal role. |
-| A4 | ❌ | **Actions are not enforced server-side** | `ActionCatalog` is display-only. Nothing checks the acting user's actions before privileged operations. Fix (per ARCHITECTURE.md §13): platform checks actions (e.g. `delete_widget` required to delete) before the op; UI driven by `/tenant/me` actions (the business portal already displays them). |
-| A5 | ⚠️ | **Role change propagation is delayed by token lifetime** | `role` is a JWT claim. A demoted user keeps Admin claims until the access token expires (15 min). Acceptable at 15 min; options: shorter tokens or a `token_version` claim bumped on privilege change. |
-| A6 | ⚠️ | **No envelope versioning / audit of role changes** | If you need history or safe migration of existing users, snapshot envelopes (keep old version for existing users, new version for new assignments). P2 unless audit is required. |
+| A1 | ✅ | Envelope role rename doesn't cascade | No longer a gap: tenants own their roles, so superadmin envelope edits intentionally don't cascade (copy semantics, no auto-sync). Renaming a **tenant** role never affects users, who reference `RoleId` — verified by the `Role_rename_preserves_permissions_by_id` test. |
+| A2 | ✅ | Envelope role deletion strands users | Same design fix: deleting an envelope role leaves tenant copies untouched. Deleting a **tenant** role is blocked while users are assigned (`DELETE /tenant/roles/{id}` → 400) — no stranding is possible. |
+| A3 | ✅ | No defined fallback when a user's role no longer matches | The silent-empty-actions state cannot occur: role deletion is blocked while assigned, and `/tenant/me` resolves actions live from `RoleId` (deny-by-default for role-less users). |
+| A4 | ✅ | Actions are not enforced server-side | `ActionChecks` enforces `view_widgets` / `create_widget` / `edit_widget` / `delete_widget` on widget endpoints and `manage_users` on user/role/invite/promote endpoints. The UI is driven by the same source (`/tenant/me` actions). |
+| A5 | ✅ | Role change propagation is delayed by token lifetime | A `token_version` claim is included in every tenant JWT and validated per request (`TokenVersionValidationMiddleware`). Role changes, password changes, MFA changes, and deletion bump the version and revoke refresh tokens, so the change takes effect immediately. |
+| A6 | ❌ | No envelope versioning / audit of role changes | Not implemented. P2 — tenants own their role edits now, so template history is only needed for platform-level audit (see D4). |
 
 ---
 
 ## B. Tenant lifecycle & isolation (P0–P1)
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| B1 | ⚠️ | **Tenant deletion orphans `Widgets`** | `AdminDeleteTenant` (`AdminEndpoints`) deletes `Users`, `RefreshTokens`, and the tenant — but **not `Widgets`**. Orphaned rows keep a dangling `TenantId`. Fix: delete widgets too (raw SQL on Postgres / bound-context on InMemory), or make `Widget.TenantId` a real FK with `ON DELETE CASCADE`. |
-| B2 | ⚠️ | **First-user-becomes-admin is a prod risk** | Anyone who registers first in an empty workspace becomes its Admin. Fine for a demo; dangerous in prod (squatting / privilege escalation). Fix: **invitations or verified-domain onboarding** (`AuthService.RegisterAsync` bootstrap rule). |
-| B3 | ❌ | **No tenant suspension** | Prod needs a "suspended" / "trial-expired" state that blocks logins and API calls. Suggest a `Status` field on `Tenant` checked in middleware. Ties into billing (F1). |
-| B4 | ⚠️ | **Hard delete vs soft delete** | Tenants/users are hard-deleted. Prod usually soft-deletes (or archives) for audit and accident recovery. Consider `IsDeleted` flags before real customer data exists. |
-| B5 | ⚠️ | **Header-based tenant resolution is the only strategy** | `X-Tenant-Id` header (Finbuckle header strategy) is fine server-to-server. A per-tenant public web UX would want **subdomain resolution** (`acme.tessera.app`) — noted in `readme.md` §6. |
-| B6 | ✅ | **Cross-tenant data isolation** | Solid: Finbuckle global query filters + `TenantClaimValidationMiddleware` (403 on claim/header mismatch). Keep it covered by tests (E1). |
+| B1 | ✅ | Tenant deletion orphans `Widgets` | `AdminDeleteTenant` now hard-deletes `Widgets`, `RefreshTokens`, and `Invitations` and soft-deletes `Users` and the tenant — nothing dangles. Postgres uses raw SQL; InMemory uses a tenant-bound context. |
+| B2 | ✅ | First-user-becomes-admin is a prod risk | Onboarding is **invite-only** — open self-registration is removed. The platform superadmin invites the workspace owner (`POST /admin/tenants/{id}/invites`); the **first invite redeemed becomes the workspace Superadmin** — a platform-managed role (all actions) that cannot be renamed, edited, deleted, or assigned/demoted by the tenant. The Superadmin invites Admins (assistants) and members via `/tenant/invites`. |
+| B3 | ✅ | No tenant suspension | `Tenant.Status` (`Active`/`Suspended`) + `TenantSuspensionMiddleware` block logins and API calls for suspended tenants. Platform paths (`/admin`, `/health`, …) are exempt even when a stray `X-Tenant-Id` is sent. |
+| B4 | ✅ | Hard delete vs soft delete | Soft delete (`IsDeleted`) on `Tenants` and `Users`; deleted tenants are filtered from the store and the public list, and the filtered unique index lets an email be reused after its account is deleted. |
+| B5 | ⚠️ | Header-based tenant resolution is the only strategy | Still `X-Tenant-Id` (Finbuckle header strategy). A per-tenant public web UX would want **subdomain resolution** (`acme.tessera.app`) — noted in `readme.md` §6. P2. |
+| B6 | ✅ | Cross-tenant data isolation | Solid: Finbuckle global query filters + `TenantClaimValidationMiddleware` (403 on claim/header mismatch). Covered by integration tests (`Cross_tenant_token_returns_403`, `Widgets_are_isolated_between_tenants`). |
 
 ---
 
 ## C. AuthN/AuthZ hardening (P0–P1)
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| C1 | ⚠️ | **Refresh token revocation is incomplete** | Single-use rotation exists (`AuthService.RefreshAsync` revokes old token), but there's **no server-side logout/revoke endpoint** and **no reuse detection** (a replayed rotated token should revoke the whole token family). Also revoke all tokens on password change. |
-| C2 | ⚠️ | **No password reset / email verification / MFA** | Register creates a verified user immediately. P0 for any real product. |
-| C3 | ⚠️ | **Account enumeration** | `/auth/register` returns "user already exists"; `/auth/login` is generic. The asymmetry lets attackers probe emails. Fix: generic messages + rate limiting. |
-| C4 | ❌ | **No rate limiting on auth endpoints** | Brute-force protection. Phase 5 on the roadmap, but P0 for a public login endpoint. |
-| C5 | ⚠️ | **JWT secret committed to the repo** | `appsettings.json` holds the dev secret. Prod must pull it from env/secrets manager, with a key **rotation** plan. Symmetric HS256 is fine while only one service verifies (switch to RS256 if more services need to verify). |
-| C6 | ⚠️ | **Superadmin token exposure window** | 12 h, no refresh. If leaked, an attacker has a 12-hour window. Consider 2–4 h + MFA. |
+| C1 | ✅ | Refresh token revocation is incomplete | Complete: rotation with **reuse detection** (replaying a rotated token revokes the whole family via `FamilyId`), server-side logout (`/auth/logout`), and all sessions revoked on password change, MFA change, or role change. |
+| C2 | ✅ | No password reset / email verification / MFA | All implemented: forgot/reset password, opt-in email verification (`Auth:RequireEmailVerification`), and TOTP MFA (enroll / confirm / disable + second-factor login step). Emails go through a pluggable `IEmailSender` — console now; swap in Resend/Postmark/SES. |
+| C3 | ✅ | Account enumeration | Closed: `/auth/register` returns a generic failure, verification-required registration returns a neutral message, and forgot-password / verify-email are message-only. Tokens are stored hashed (SHA-256), never raw. |
+| C4 | ✅ | No rate limiting on auth endpoints | Fixed-window per-IP rate limiter on every `/auth/*` endpoint (429 on excess), configurable via `RateLimiting:*`. Covered by the `Auth_endpoints_are_rate_limited` test. |
+| C5 | ✅ | JWT secret committed to the repo | Base `appsettings.json` holds **no** secret; the dev secret lives only in `appsettings.Development.json`. Startup fails fast when `Jwt:SecretKey` is unset, so production must set `Jwt__SecretKey`. A key-**rotation** runbook is still worth writing (see E6). |
+| C6 | ✅ | Superadmin token exposure window | Reduced from 12 h to **4 h** (`Jwt:AdminAccessTokenExpirationHours`). Superadmin MFA is still future work. |
 
 ---
 
 ## D. Data integrity & concurrency (P1)
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| D1 | ⚠️ | **Race condition on email uniqueness** | Same-email-in-same-tenant is checked with `AnyAsync` (app-level) but the DB index on `Users.Email` is **non-unique**. Two concurrent registrations can both pass → duplicates. Fix: composite unique index `(Email, TenantId)` — the unique indexes on `AdminUsers.Email` and `Tenants.Identifier` are already correct. |
-| D2 | ⚠️ | **Last-write-wins on shared edits** | Two superadmins editing the same envelope/user silently overwrite each other. Fix: optimistic concurrency (EF `IsConcurrencyToken()` / `rowversion`). |
-| D3 | ⚠️ | **Provider divergence (InMemory vs Postgres)** | Raw-SQL branches for seed/delete mean InMemory and Postgres behave differently. Fine for dev; a trap in prod. Keep both covered by tests, or standardize on Postgres. |
-| D4 | ❌ | **No audit trail** | No record of who changed which envelope/tenant when. P2 unless compliance requires it. |
+| D1 | ✅ | Race condition on email uniqueness | Filtered unique index `(Email, TenantId) WHERE NOT IsDeleted` (migration `TenantOwnedRolesAndSecurity`) closes the two-concurrent-registrations race; soft-deleted accounts don't block email reuse. |
+| D2 | ✅ | Last-write-wins on shared edits | Optimistic concurrency via the Postgres `xmin` system column on `Users`, `Tenants`, `TenantRoles`, and `Envelopes`/`AppRoles`; `DbUpdateConcurrencyException` → **409 Conflict** on tenant/envelope/role edits. |
+| D3 | ⚠️ | Provider divergence (InMemory vs Postgres) | Raw-SQL branches (seed/delete) still differ between providers. Both paths are exercised by integration tests where feasible; standardizing on Postgres for all environments remains a goal. |
+| D4 | ❌ | No audit trail | Not implemented. P2 — nothing records who changed which envelope/tenant/role when. |
 
 ---
 
 ## E. Reliability & operations (P0)
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| E1 | ❌ | **No automated test project** | The four isolation layers are only smoke-tested by curl (documented in `Guide.md` / `progress.md`). Add unit tests (auth service, claim validation) + integration tests (cross-tenant 403, tenant isolation) — would have caught B1 instantly. |
-| E2 | ❌ | **No CI/CD or deployment** | Phase 7 on the roadmap. Fly.io + Postgres chosen; nothing ships yet. |
-| E3 | ⚠️ | **Migrations auto-apply on startup** | `Program.cs` runs `db.Database.Migrate()` on boot. Risky in prod (no rollback, no review gate). Run migrations as an explicit deploy step instead. |
-| E4 | ⚠️ | **`/health` is a bare 200** | Doesn't verify DB connectivity. Add liveness + readiness (readiness checks Postgres). |
-| E5 | ❌ | **No structured observability** | Phase 4 on the roadmap. Correlation IDs across platform + portals, metrics, tracing. `ApiErrorResponse.TraceId` and Serilog exist — the scaffolding is there; wire a real monitoring sink. |
-| E6 | ❌ | **Backups / PITR, secret rotation, prod CORS** | Postgres runs on a Docker volume with no backup story. CORS allows only localhost origins. |
+| E1 | ✅ | No automated test project | `apps/platform/src/Tessera.Platform.Tests` (xUnit + `WebApplicationFactory`): 26 tests covering auth flows, token rotation/reuse-detection, MFA, password reset, invitations, rate limiting, suspension, tenant isolation, action enforcement, and role rename/delete. |
+| E2 | ❌ | No CI/CD or deployment | Phase 7 on the roadmap — deferred; nothing ships yet. |
+| E3 | ✅ | Migrations auto-apply on startup | Gated by `Database:AutoMigrate` (default `true` for dev). Production should set `Database__AutoMigrate=false` and run `dotnet ef database update` as an explicit deploy step. |
+| E4 | ✅ | `/health` is a bare 200 | Split: `/health` (liveness) and `/ready` (readiness — checks DB via `CanConnectAsync`, 503 when unreachable). |
+| E5 | ❌ | No structured observability | Phase 4 on the roadmap — Serilog, request logging, and `TraceId` exist; a real monitoring sink (OTLP/Loki/…) is still not wired. |
+| E6 | ⚠️ | Backups / PITR, secret rotation, prod CORS | CORS origins are now config-driven (`Cors:AllowedOrigins`), no longer hardcoded in `Program.cs`. Backups/PITR for the Postgres volume and a secret-rotation runbook remain. |
 
 ---
 
 ## F. Product-level multitenant features (P2)
 
-| # | Status | Gap | Why it matters / suggested fix |
+| # | Status | Gap | Why it matters / resolution |
 |---|---|---|---|
-| F1 | ❌ | **Billing & entitlements** | Phase 5 on the roadmap: plan limits (users, storage), trial, and **suspension on failed payment** (ties to B3). |
-| F2 | ❌ | **Tenant provisioning workflow** | New tenant → seed defaults → invite admin → billing state. |
-| F3 | ✅ | **Envelope/roles model** | A genuinely good foundation — the right abstraction; it just needs the enforcement + cascade semantics from section A. |
+| F1 | ❌ | Billing & entitlements | Phase 5 on the roadmap: plan limits (users, storage), trial, and **suspension on failed payment** (the suspension mechanism from B3 is ready for it). |
+| F2 | ⚠️ | Tenant provisioning workflow | Core flow exists: create tenant → roles copied from the assigned envelope → invite the admin via email link. Billing-state wiring (F1) is the missing piece. |
+| F3 | ✅ | Envelope/roles model | Fully realized: envelope = template, tenant-owned role copies, action-based enforcement, no cascade hazards. |
 
 ---
 
-## Top 5 priorities before "production"
+## Remaining before "production"
 
-1. **Action enforcement + envelope-cascade semantics** (A1–A4) — design the role-resolution contract now.
-2. **Widgets cleanup on tenant delete** (B1) — one-line bug fix.
-3. **Composite unique index `(Email, TenantId)` + generic auth error messages** (D1, C3).
-4. **A real test project covering the four isolation layers** (E1).
-5. **Replace first-user-becomes-admin with invites + move the JWT secret out of the repo** (B2, C5).
+1. **Audit trail** (D4) and **envelope/template versioning** (A6).
+2. **Subdomain tenant resolution** (B5) if a per-tenant public web UX is planned.
+3. **Backups/PITR + a secret-rotation runbook** (E6) and real prod CORS origins.
+4. **CI/CD** (E2) with migrations as an explicit deploy step (E3) and a **monitoring sink** (E5).
+5. **Billing & entitlements** (F1, F2).
 
 ---
 
@@ -99,9 +99,9 @@
 
 | Area | ✅ Solid | ⚠️ Partial | ❌ Missing |
 |---|---|---|---|
-| A. Roles / actions / envelope cascade | — | 3 (A3, A5, A6) | 3 (A1, A2, A4) |
-| B. Tenant lifecycle & isolation | 1 (B6) | 4 (B1, B2, B4, B5) | 1 (B3) |
-| C. AuthN / AuthZ | — | 5 (C1, C2, C3, C5, C6) | 1 (C4) |
-| D. Data integrity & concurrency | — | 3 (D1, D2, D3) | 1 (D4) |
-| E. Reliability & operations | — | 3 (E3, E4, E6) | 3 (E1, E2, E5) |
-| F. Product features | 1 (F3) | — | 2 (F1, F2) |
+| A. Roles / actions / envelope | 5 (A1–A5) | — | 1 (A6) |
+| B. Tenant lifecycle & isolation | 5 (B1–B4, B6) | 1 (B5) | — |
+| C. AuthN / AuthZ | 6 (C1–C6) | — | — |
+| D. Data integrity & concurrency | 2 (D1, D2) | 1 (D3) | 1 (D4) |
+| E. Reliability & operations | 3 (E1, E3, E4) | 1 (E6) | 2 (E2, E5) |
+| F. Product features | 1 (F3) | 1 (F2) | 1 (F1) |

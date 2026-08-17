@@ -43,25 +43,29 @@ public class TenantClaimValidationMiddleware
             var tokenTenantIdentifier =
                 context.User.FindFirstValue("tenant_identifier");
 
-            var headerTenantIdentifier =
-                context.Request.Headers["X-Tenant-Id"]
-                    .FirstOrDefault();
-
-            // Both values should normally be present:
-            // - The JWT is issued with a tenant_identifier claim.
-            // - TenantValidationMiddleware ensures X-Tenant-Id exists.
-            //
-            // This additional check provides defense in depth.
-            var tenantsMatch =
-                !string.IsNullOrEmpty(tokenTenantIdentifier) &&
-                !string.IsNullOrEmpty(headerTenantIdentifier) &&
-                string.Equals(
-                    tokenTenantIdentifier,
-                    headerTenantIdentifier,
-                    StringComparison.OrdinalIgnoreCase);
-
-            if (!tenantsMatch)
+            // Superadmin JWTs carry no tenant claims — skip the check
+            // (platform-level requests are authorized separately via the
+            // SuperAdminOnly policy). Only tenant user tokens are compared.
+            if (!string.IsNullOrEmpty(tokenTenantIdentifier))
             {
+                var headerTenantIdentifier =
+                    context.Request.Headers["X-Tenant-Id"]
+                        .FirstOrDefault();
+
+                // Both values should normally be present:
+                // - The JWT is issued with a tenant_identifier claim.
+                // - TenantValidationMiddleware ensures X-Tenant-Id exists.
+                //
+                // This additional check provides defense in depth.
+                var tenantsMatch =
+                    !string.IsNullOrEmpty(headerTenantIdentifier) &&
+                    string.Equals(
+                        tokenTenantIdentifier,
+                        headerTenantIdentifier,
+                        StringComparison.OrdinalIgnoreCase);
+
+                if (!tenantsMatch)
+                {
                 var response = new ApiErrorResponse
                 {
                     StatusCode = StatusCodes.Status403Forbidden,
@@ -74,13 +78,14 @@ public class TenantClaimValidationMiddleware
                     Timestamp = DateTime.UtcNow
                 };
 
-                context.Response.ContentType = "application/json";
-                context.Response.StatusCode =
-                    StatusCodes.Status403Forbidden;
+                    context.Response.ContentType = "application/json";
+                    context.Response.StatusCode =
+                        StatusCodes.Status403Forbidden;
 
-                await context.Response.WriteAsJsonAsync(response);
+                    await context.Response.WriteAsJsonAsync(response);
 
-                return;
+                    return;
+                }
             }
         }
 

@@ -53,6 +53,7 @@ public static class AdminEndpoints
             {
                 var result = await db.Tenants
                     .AsNoTracking()
+                    .Where(t => !t.IsDeleted)
                     .Select(t => new
                     {
                         t.Id,
@@ -84,7 +85,8 @@ public static class AdminEndpoints
             "/",
             async (
                 CreateTenantRequest request,
-                AppDbContext db) =>
+                AppDbContext db,
+                HttpContext http) =>
             {
                 var identifier = request.Identifier
                     .Trim()
@@ -135,6 +137,17 @@ public static class AdminEndpoints
 
                 await db.SaveChangesAsync();
 
+                // Seed the tenant's own roles from the assigned envelope
+                // template (copy semantics — the tenant owns its roles).
+                if (request.EnvelopeId is Guid envelopeId)
+                {
+                    await CopyEnvelopeRolesToTenantAsync(
+                        db,
+                        http,
+                        tenant.Id,
+                        envelopeId);
+                }
+
                 return Results.Created(
                     $"/admin/tenants/{tenant.Id}",
                     tenant);
@@ -150,7 +163,8 @@ public static class AdminEndpoints
             async (
                 string id,
                 UpdateTenantRequest request,
-                AppDbContext db) =>
+                AppDbContext db,
+                HttpContext http) =>
             {
                 var tenant = await db.Tenants
                     .FirstOrDefaultAsync(t => t.Id == id);
@@ -200,18 +214,46 @@ public static class AdminEndpoints
 
                 // Users store the tenant ID internally, so keep the
                 // primary key stable even when the identifier changes.
+                var envelopeChanged = tenant.EnvelopeId != request.EnvelopeId;
+
                 tenant.Identifier = newIdentifier;
                 tenant.Name = request.Name.Trim();
                 tenant.EnvelopeId = request.EnvelopeId;
 
-                await db.SaveChangesAsync();
+                try
+                {
+                    await db.SaveChangesAsync();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    return Results.Conflict(
+                        new
+                        {
+                            error =
+                                "This tenant was modified by someone else. " +
+                                "Reload and try again."
+                        });
+                }
+
+                // When the envelope assignment changes, copy any NEW roles
+                // from the new template into the tenant's role set (merge —
+                // the tenant's existing, possibly customized roles are kept).
+                if (envelopeChanged && request.EnvelopeId is Guid envelopeId)
+                {
+                    await CopyEnvelopeRolesToTenantAsync(
+                        db,
+                        http,
+                        tenant.Id,
+                        envelopeId);
+                }
 
                 return Results.Ok(tenant);
             })
             .WithName("AdminUpdateTenant");
 
         // ------------------------------------------------------------
-        // Delete Tenant
+        // Delete Tenant (soft-delete tenant + users; hard-delete widgets,
+        // refresh tokens, invitations so nothing dangles — B1/B4)
         // ------------------------------------------------------------
 
         tenants.MapDelete(
@@ -222,7 +264,7 @@ public static class AdminEndpoints
                 HttpContext http) =>
             {
                 var tenant = await db.Tenants
-                    .FirstOrDefaultAsync(t => t.Id == id);
+                    .FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted);
 
                 if (tenant is null)
                 {
@@ -235,8 +277,9 @@ public static class AdminEndpoints
                 // requests do not have.
                 if (db.Database.IsRelational())
                 {
+                    // B1: widgets are deleted too (no orphaned rows).
                     await db.Database.ExecuteSqlRawAsync(
-                        "DELETE FROM \"Users\" WHERE \"TenantId\" = {0}",
+                        "DELETE FROM \"Widgets\" WHERE \"TenantId\" = {0}",
                         tenant.Id);
 
                     await db.Database.ExecuteSqlRawAsync(
@@ -244,7 +287,21 @@ public static class AdminEndpoints
                         tenant.Id);
 
                     await db.Database.ExecuteSqlRawAsync(
-                        "DELETE FROM \"Tenants\" WHERE \"Id\" = {0}",
+                        "DELETE FROM \"Invitations\" WHERE \"TenantId\" = {0}",
+                        tenant.Id);
+
+                    // B4: soft delete users and the tenant itself.
+                    await db.Database.ExecuteSqlRawAsync(
+                        """
+                        UPDATE "Users"
+                        SET "IsDeleted" = true, "RoleId" = NULL
+                        WHERE "TenantId" = {0}
+                        """,
+                        tenant.Id);
+
+                    await db.Database.ExecuteSqlRawAsync(
+                        "UPDATE \"Tenants\" SET \"IsDeleted\" = true " +
+                        "WHERE \"Id\" = {0}",
                         tenant.Id);
 
                     return Results.NoContent();
@@ -261,12 +318,12 @@ public static class AdminEndpoints
                         },
                         http.RequestServices);
 
-                var users = await bound.Users
+                var widgets = await bound.Widgets
                     .IgnoreQueryFilters()
-                    .Where(u => u.TenantId == tenant.Id)
+                    .Where(w => w.TenantId == tenant.Id)
                     .ToListAsync();
 
-                bound.Users.RemoveRange(users);
+                bound.Widgets.RemoveRange(widgets);
 
                 var refreshTokens = await bound.RefreshTokens
                     .IgnoreQueryFilters()
@@ -275,15 +332,211 @@ public static class AdminEndpoints
 
                 bound.RefreshTokens.RemoveRange(refreshTokens);
 
+                var invitations = await bound.Invitations
+                    .IgnoreQueryFilters()
+                    .Where(i => i.TenantId == tenant.Id)
+                    .ToListAsync();
+
+                bound.Invitations.RemoveRange(invitations);
+
+                var users = await bound.Users
+                    .IgnoreQueryFilters()
+                    .Where(u => u.TenantId == tenant.Id)
+                    .ToListAsync();
+
+                foreach (var user in users)
+                {
+                    user.IsDeleted = true;
+                    user.RoleId = null;
+                }
+
                 await bound.SaveChangesAsync();
 
-                db.Tenants.Remove(tenant);
+                tenant.IsDeleted = true;
 
                 await db.SaveChangesAsync();
 
                 return Results.NoContent();
             })
             .WithName("AdminDeleteTenant");
+
+        // ------------------------------------------------------------
+        // Tenant Status (suspend / unsuspend — B3)
+        // ------------------------------------------------------------
+
+        tenants.MapPut(
+            "/{id}/status",
+            async (
+                string id,
+                UpdateTenantStatusRequest request,
+                AppDbContext db) =>
+            {
+                if (!Enum.TryParse<TenantStatus>(
+                        request.Status,
+                        ignoreCase: true,
+                        out var status))
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error = "Status must be 'Active' or 'Suspended'."
+                        });
+                }
+
+                var tenant = await db.Tenants
+                    .FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted);
+
+                if (tenant is null)
+                {
+                    return Results.NotFound();
+                }
+
+                tenant.Status = status;
+
+                try
+                {
+                    await db.SaveChangesAsync();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    return Results.Conflict(
+                        new
+                        {
+                            error =
+                                "This tenant was modified by someone else. " +
+                                "Reload and try again."
+                        });
+                }
+
+                return Results.Ok(
+                    new
+                    {
+                        tenant.Id,
+                        tenant.Identifier,
+                        tenant.Status
+                    });
+            })
+            .WithName("AdminUpdateTenantStatus");
+
+        // ------------------------------------------------------------
+        // Platform Invite (designate the tenant's first Superadmin)
+        // ------------------------------------------------------------
+
+        tenants.MapPost(
+            "/{id}/invites",
+            async (
+                string id,
+                PlatformInviteRequest request,
+                AppDbContext db,
+                HttpContext http,
+                IEmailSender emailSender,
+                IConfiguration configuration) =>
+            {
+                // Accept either the internal Id or the external Identifier
+                // (seeded tenants like alpha-corp differ between the two).
+                var tenant = await db.Tenants
+                    .FirstOrDefaultAsync(
+                        t => (t.Id == id || t.Identifier == id) &&
+                             !t.IsDeleted);
+
+                if (tenant is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var email = request.Email.Trim().ToLowerInvariant();
+
+                if (!IsValidEmail(email))
+                {
+                    return Results.BadRequest(
+                        new { error = "A valid email is required." });
+                }
+
+                // Superadmin requests have no tenant context, so all
+                // tenant-scoped work runs on a context bound to this tenant.
+                await using var bound =
+                    MultiTenantDbContext.Create<AppDbContext, Tenant>(
+                        new Tenant
+                        {
+                            Id = tenant.Id
+                        },
+                        http.RequestServices);
+
+                // Ensure roles exist, then pick the invite role: the
+                // platform-managed Superadmin when the workspace has none,
+                // otherwise the built-in Admin (tenant admins invite the
+                // rest of the team through /tenant/invites).
+                await TenantRoleSeeder.EnsureTenantRolesAsync(
+                    bound,
+                    tenant.EnvelopeId);
+
+                var superadminRole = await bound.TenantRoles
+                    .FirstOrDefaultAsync(r => r.IsSystem);
+
+                var hasSuperadmin = superadminRole is not null &&
+                    await bound.Users.AnyAsync(
+                        u => u.RoleId == superadminRole.Id && !u.IsDeleted);
+
+                Guid? roleId = hasSuperadmin
+                    ? (await bound.TenantRoles
+                        .FirstOrDefaultAsync(
+                            r => r.Name.ToLower() == Roles.Admin.ToLower()))
+                        ?.Id
+                    : superadminRole?.Id;
+
+                if (roleId is null)
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "No assignable role is available in this " +
+                                "workspace."
+                        });
+                }
+
+                var userExists = await bound.Users.AnyAsync(
+                    u => u.Email == email && !u.IsDeleted);
+
+                var token = AuthHelpers.NewToken();
+
+                if (!userExists)
+                {
+                    bound.Invitations.Add(
+                        new Invitation
+                        {
+                            Email = email,
+                            RoleId = roleId.Value,
+                            TokenHash = AuthHelpers.Sha256Hex(token),
+                            ExpiresAt = DateTime.UtcNow.AddHours(72)
+                        });
+
+                    await bound.SaveChangesAsync();
+
+                    var webBaseUrl =
+                        configuration["Email:WebBaseUrl"]
+                        ?? "http://localhost:3000";
+
+                    var link =
+                        $"{webBaseUrl}/register?invite={token}" +
+                        $"&tenant={tenant.Identifier}";
+
+                    await emailSender.SendAsync(
+                        email,
+                        "You're invited to join a Tessera workspace",
+                        $"<p>Click <a href=\"{link}\">here</a> to accept " +
+                        "your invitation. It expires in 3 days.</p>");
+                }
+
+                return Results.Ok(
+                    new
+                    {
+                        message =
+                            "If this email is not already a member, an " +
+                            "invitation has been sent."
+                    });
+            })
+            .WithName("AdminInviteTenantUser");
 
         // ============================================================
         // Envelope Management
@@ -421,7 +674,20 @@ public static class AdminEndpoints
                         });
                 }
 
-                await db.SaveChangesAsync();
+                try
+                {
+                    await db.SaveChangesAsync();
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    return Results.Conflict(
+                        new
+                        {
+                            error =
+                                "This envelope was modified by someone else. " +
+                                "Reload and try again."
+                        });
+                }
 
                 return Results.Ok(envelope);
             })
@@ -469,6 +735,50 @@ public static class AdminEndpoints
     // Helpers
     // ================================================================
 
+    /// <summary>
+    /// Copies the roles of <paramref name="envelopeId"/> into the tenant's
+    /// own role set. Runs on a tenant-bound context because superadmin
+    /// requests have no tenant context and Finbuckle's EnforceMultiTenant
+    /// requires one to stamp TenantId on insert. Merge semantics: roles the
+    /// tenant already has (by name) are left untouched.
+    /// </summary>
+    private static async Task CopyEnvelopeRolesToTenantAsync(
+        AppDbContext db,
+        HttpContext http,
+        string tenantId,
+        Guid envelopeId)
+    {
+        var envelope = await db.Envelopes
+            .AsNoTracking()
+            .Include(e => e.Roles)
+            .FirstOrDefaultAsync(e => e.Id == envelopeId);
+
+        if (envelope?.Roles.Count == 0)
+        {
+            return;
+        }
+
+        await using var bound =
+            MultiTenantDbContext.Create<AppDbContext, Tenant>(
+                new Tenant
+                {
+                    Id = tenantId
+                },
+                http.RequestServices);
+
+        var existingNames = await bound.TenantRoles
+            .Select(r => r.Name)
+            .ToListAsync();
+
+        TenantRoleSeeder.CopyFromEnvelope(bound, envelope!, existingNames);
+
+        // The platform-managed Superadmin role is never part of the
+        // template — ensure it exists alongside the copies.
+        TenantRoleSeeder.EnsureSuperadmin(bound);
+
+        await bound.SaveChangesAsync();
+    }
+
     private static bool IsValidIdentifier(string identifier)
     {
         return !string.IsNullOrWhiteSpace(identifier) &&
@@ -478,6 +788,19 @@ public static class AdminEndpoints
                        char.IsAsciiLetterLower(character) ||
                        char.IsDigit(character) ||
                        character == '-');
+    }
+
+    private static bool IsValidEmail(string email)
+    {
+        try
+        {
+            var address = new System.Net.Mail.MailAddress(email);
+            return address.Address == email;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? ValidateEnvelopeRequest(
@@ -506,6 +829,15 @@ public static class AdminEndpoints
 
             var roleName = role.Name.Trim();
 
+            if (string.Equals(
+                    roleName,
+                    Roles.TenantSuperadmin,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "The role name 'Superadmin' is reserved for the " +
+                    "platform-managed workspace owner role.";
+            }
+
             if (!seenRoleNames.Add(roleName))
             {
                 return $"Duplicate role name: {roleName}";
@@ -529,6 +861,10 @@ public record UpdateTenantRequest(
     string Identifier,
     string Name,
     Guid? EnvelopeId = null);
+
+public record UpdateTenantStatusRequest(string Status);
+
+public record PlatformInviteRequest(string Email);
 
 public record UpsertEnvelopeRequest(
     string Name,

@@ -200,32 +200,87 @@ export async function apiFetch<T>(
 
 // ─── Auth ───────────────────────────────────────────────────────────
 
+export interface MfaChallenge {
+  mfaRequired: true;
+  mfaToken: string;
+}
+
+/**
+ * Logs in. Returns an MFA token when the account requires a second factor
+ * (the caller must then call completeMfaLogin), or null when the login
+ * succeeded and tokens were stored.
+ */
 export async function login(
   email: string,
   password: string,
   tenantId: string,
-): Promise<void> {
-  const tokens = await apiFetch<TokenPair>("/auth/login", {
+): Promise<string | null> {
+  const data = await apiFetch<
+    Partial<TokenPair> & { mfaRequired?: boolean; mfaToken?: string }
+  >("/auth/login", {
     method: "POST",
     body: { email, password },
+    tenantId,
+    useAuth: false,
+  });
+
+  if (data.mfaRequired && data.mfaToken) {
+    return data.mfaToken;
+  }
+
+  if (data.accessToken && data.refreshToken) {
+    storeAuth({ ...data, tenantId, email } as TokenPair & { tenantId: string; email: string });
+    return null;
+  }
+
+  throw new ApiError(400, "Unexpected response from the login endpoint.");
+}
+
+/** Second step of an MFA-protected login. */
+export async function completeMfaLogin(
+  mfaToken: string,
+  code: string,
+  tenantId: string,
+  email: string,
+): Promise<void> {
+  const tokens = await apiFetch<TokenPair>("/auth/mfa", {
+    method: "POST",
+    body: { mfaToken, code },
     tenantId,
     useAuth: false,
   });
   storeAuth({ ...tokens, tenantId, email });
 }
 
+/**
+ * Registers (optionally redeeming an invite token). Returns a message when
+ * the account needs email verification instead of tokens.
+ */
 export async function register(
   email: string,
   password: string,
   tenantId: string,
-): Promise<void> {
-  const tokens = await apiFetch<TokenPair>("/auth/register", {
+  inviteToken?: string,
+): Promise<{ message?: string }> {
+  const data = await apiFetch<
+    Partial<TokenPair> & { message?: string }
+  >("/auth/register", {
     method: "POST",
-    body: { email, password },
+    body: {
+      email,
+      password,
+      inviteToken: inviteToken ?? null,
+    },
     tenantId,
     useAuth: false,
   });
-  storeAuth({ ...tokens, tenantId, email });
+
+  if (data.accessToken && data.refreshToken) {
+    storeAuth({ ...data, tenantId, email } as TokenPair & { tenantId: string; email: string });
+    return {};
+  }
+
+  return { message: data.message };
 }
 
 export function logout(): void {
@@ -267,6 +322,7 @@ export async function getTenants(): Promise<Tenant[]> {
 export interface EnvelopeRole {
   name: string;
   actions: string[];
+  isSystem?: boolean;
 }
 
 export interface Envelope {
@@ -280,6 +336,7 @@ export interface TenantUser {
   id: string;
   email: string;
   role: string;
+  roleIsSystem?: boolean;
   createdAt: string;
 }
 

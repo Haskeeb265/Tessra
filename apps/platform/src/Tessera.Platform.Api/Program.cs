@@ -1,12 +1,17 @@
+using System.Security.Claims;
 using System.Text;
+
+using Microsoft.Extensions.Options;
 
 using Finbuckle.MultiTenant.AspNetCore.Extensions;
 using Finbuckle.MultiTenant.Extensions;
+using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
 
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using System.Threading.RateLimiting;
 
 using Tessera.Platform.Api.Data;
 using Tessera.Platform.Api.Endpoints;
@@ -46,57 +51,91 @@ try
     // ============================================================
 
     // Use PostgreSQL if a connection string is configured, otherwise fall
-    // back to InMemory for local development without Docker.
-    var connectionString = builder.Configuration
-        .GetConnectionString("DefaultConnection");
+    // back to InMemory for local development without Docker. The options
+    // action runs lazily at first context resolution, so it reads the final
+    // merged configuration (host config is merged only after Program's
+    // top-level code runs — e.g. WebApplicationFactory test overrides).
+    builder.Services.AddDbContext<AppDbContext>(options =>
+    {
+        var connectionString = builder.Configuration
+            .GetConnectionString("DefaultConnection");
 
-    if (!string.IsNullOrEmpty(connectionString))
-    {
-        builder.Services.AddDbContext<AppDbContext>(
-            options => options.UseNpgsql(connectionString));
-    }
-    else
-    {
-        builder.Services.AddDbContext<AppDbContext>(
-            options => options.UseInMemoryDatabase("TesseraPlatformDb"));
-    }
+        if (!string.IsNullOrEmpty(connectionString))
+        {
+            options.UseNpgsql(connectionString);
+        }
+        else
+        {
+            // Configurable name so each test factory can use its own store
+            // (the InMemory provider caches by name process-wide).
+            options.UseInMemoryDatabase(
+                builder.Configuration["Database:InMemoryName"]
+                ?? "TesseraPlatformDb");
+        }
+    });
 
     // ============================================================
     // Authentication & Authorization
     // ============================================================
-
-    var jwtSettings = builder.Configuration.GetSection("Jwt");
-    var secretKey = jwtSettings["SecretKey"]!;
-    var issuer = jwtSettings["Issuer"]!;
-    var audience = jwtSettings["Audience"]!;
 
     builder.Services.AddAuthentication(options =>
     {
         options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
         options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
     })
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = issuer,
-            ValidAudience = audience,
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(secretKey)),
-            ClockSkew = TimeSpan.Zero
-        };
-    });
+    .AddJwtBearer();
+
+    // Configure the bearer validation parameters lazily from the final
+    // configuration (host config is merged only after Program's top-level
+    // code runs — e.g. WebApplicationFactory test overrides), rather than
+    // capturing them at startup.
+    builder.Services.AddSingleton<IConfigureOptions<JwtBearerOptions>>(
+        serviceProvider => new ConfigureNamedOptions<JwtBearerOptions>(
+            JwtBearerDefaults.AuthenticationScheme,
+            options =>
+            {
+                var jwt = serviceProvider
+                    .GetRequiredService<IConfiguration>()
+                    .GetSection("Jwt");
+
+                var key = jwt["SecretKey"];
+
+                if (string.IsNullOrEmpty(key))
+                {
+                    throw new InvalidOperationException(
+                        "Jwt:SecretKey is not configured. Set the " +
+                        "Jwt__SecretKey environment variable (or appsettings) " +
+                        "before starting the API.");
+                }
+
+                options.TokenValidationParameters =
+                    new TokenValidationParameters
+                    {
+                        ValidateIssuer = true,
+                        ValidateAudience = true,
+                        ValidateLifetime = true,
+                        ValidateIssuerSigningKey = true,
+                        ValidIssuer = jwt["Issuer"],
+                        ValidAudience = jwt["Audience"],
+                        IssuerSigningKey = new SymmetricSecurityKey(
+                            Encoding.UTF8.GetBytes(key)),
+                        ClockSkew = TimeSpan.Zero
+                    };
+            }));
 
     builder.Services.AddAuthorization(options =>
     {
-        options.AddPolicy("AdminOnly", policy =>
-            policy.RequireRole(Roles.Admin));
+        // Tenant-level authorization is action-based (see ActionChecks);
+        // only the platform-level superadmin role stays claim-based. The
+        // assertion also requires the absence of tenant claims so a tenant
+        // JWT can never satisfy this policy — even if a tenant role happens
+        // to be named "SuperAdmin" (role-claim comparison is
+        // case-insensitive).
         options.AddPolicy("SuperAdminOnly", policy =>
-            policy.RequireRole(Roles.SuperAdmin));
+            policy.RequireAssertion(context =>
+                context.User.IsInRole(Roles.SuperAdmin) &&
+                string.IsNullOrEmpty(
+                    context.User.FindFirstValue("tenant_identifier"))));
     });
 
     // ============================================================
@@ -107,20 +146,79 @@ try
     builder.Services.AddScoped<AuthService>();
     builder.Services.AddScoped<AdminAuthService>();
 
+    // Pluggable email: swap ConsoleEmailSender for a real provider
+    // (Resend, Postmark, SES…) by registering a different IEmailSender.
+    builder.Services.AddScoped<IEmailSender, ConsoleEmailSender>();
+
     // ============================================================
-    // CORS
+    // CORS (origins from configuration — E6)
     // ============================================================
 
-    // Allow both frontends (apps/web tenant portal on :3000 and the
-    // apps/platform-portal superadmin portal on :3001) to call this API.
+    var corsOrigins = builder.Configuration
+        .GetSection("Cors:AllowedOrigins")
+        .Get<string[]>()
+        ?? [];
+
+    if (corsOrigins.Length == 0)
+    {
+        // Defaults for local dev (both portals). Production overrides via
+        // Cors__AllowedOrigins__0 etc. or appsettings.<Env>.json.
+        corsOrigins =
+        [
+            "http://localhost:3000", "https://localhost:3000",
+            "http://localhost:3001", "https://localhost:3001"
+        ];
+    }
+
     builder.Services.AddCors(options =>
     {
         options.AddPolicy("WebApp", policy =>
-            policy.WithOrigins(
-                    "http://localhost:3000", "https://localhost:3000",
-                    "http://localhost:3001", "https://localhost:3001")
+            policy.WithOrigins(corsOrigins)
                 .AllowAnyHeader()
                 .AllowAnyMethod());
+    });
+
+    // ============================================================
+    // Rate Limiting (C4). Registered unconditionally; the enabled
+    // flag and limits are read per-request so configuration merged
+    // after startup (e.g. WebApplicationFactory test overrides)
+    // takes effect. Tests disable it via RateLimiting:Enabled=false.
+    // ============================================================
+
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode =
+            StatusCodes.Status429TooManyRequests;
+
+        options.AddPolicy("auth", context =>
+        {
+            // Resolve configuration from the request services, which
+            // reflect the final merged configuration.
+            var config = context.RequestServices
+                .GetRequiredService<IConfiguration>();
+
+            if (!config.GetValue<bool>("RateLimiting:Enabled", true))
+            {
+                return RateLimitPartition.GetNoLimiter("disabled");
+            }
+
+            var authPermitLimit = config.GetValue<int>(
+                "RateLimiting:AuthPermitLimit", 20);
+            var authWindowSeconds = config.GetValue<int>(
+                "RateLimiting:AuthWindowSeconds", 60);
+
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey:
+                    context.Connection.RemoteIpAddress?.ToString()
+                    ?? "unknown",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = authPermitLimit,
+                    Window = TimeSpan.FromSeconds(authWindowSeconds),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                });
+        });
     });
 
     builder.Services.AddOpenApi();
@@ -148,10 +246,15 @@ try
     // CORS middleware instead of being rejected for a missing X-Tenant-Id.
     app.UseCors("WebApp");
 
+    app.UseRateLimiter();
+
     // Validate X-Tenant-Id header before tenant resolution.
     app.UseMiddleware<TenantValidationMiddleware>();
 
     app.UseMultiTenant();
+
+    // Block requests to suspended tenants (B3) — includes /auth endpoints.
+    app.UseMiddleware<TenantSuspensionMiddleware>();
 
     app.UseAuthentication();
 
@@ -161,17 +264,38 @@ try
     // distinct error codes: 401 vs 403).
     app.UseMiddleware<TenantClaimValidationMiddleware>();
 
+    // Reject stale/deleted sessions immediately (A5). Runs after the tenant
+    // claim check so cross-tenant reuse still gets its distinct 403.
+    app.UseMiddleware<TokenVersionValidationMiddleware>();
+
     app.UseAuthorization();
 
     // ============================================================
     // Endpoints
     // ============================================================
 
+    // Liveness: the process is up. (Readiness: /ready below.)
     app.MapGet(
         "/health",
         () => Results.Ok(
             new { status = "healthy", timestamp = DateTime.UtcNow }))
         .WithName("HealthCheck");
+
+    // Readiness: the API can reach its database (E4).
+    app.MapGet(
+        "/ready",
+        async (AppDbContext db) =>
+        {
+            var reachable = await db.Database.CanConnectAsync();
+
+            return reachable
+                ? Results.Ok(
+                    new { status = "ready", timestamp = DateTime.UtcNow })
+                : Results.Json(
+                    new { status = "unavailable", timestamp = DateTime.UtcNow },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+        })
+        .WithName("Readiness");
 
     // Public endpoint the frontends use to populate the workspace picker.
     app.MapGet(
@@ -180,6 +304,7 @@ try
         {
             var result = await db.Tenants
                 .AsNoTracking()
+                .Where(t => !t.IsDeleted)
                 .OrderBy(t => t.Name)
                 .Select(t => new { id = t.Identifier, name = t.Name })
                 .ToListAsync();
@@ -204,65 +329,36 @@ try
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        // Auto-apply pending migrations on startup for relational databases.
-        // InMemory doesn't support migrations, so we skip it.
-        if (db.Database.IsRelational())
+        // E3: migrations auto-apply on startup unless Database:AutoMigrate
+        // is false — production should run `dotnet ef database update` as
+        // an explicit deploy step instead.
+        if (db.Database.IsRelational() &&
+            app.Configuration.GetValue<bool>("Database:AutoMigrate"))
         {
             db.Database.Migrate();
         }
 
         await SeedPlatformDataAsync(db, app.Configuration);
 
-        // Seed an admin user for every configured tenant using raw SQL on
-        // PostgreSQL. We use SQL instead of EF Core because Finbuckle's
-        // EnforceMultiTenant requires a TenantInfo context that doesn't exist
-        // during startup (no HTTP request). Raw SQL bypasses the EF Core
-        // change tracker and EnforceMultiTenant entirely.
-        if (db.Database.IsRelational() &&
-            !await db.Users.IgnoreQueryFilters().AnyAsync())
+        if (db.Database.IsRelational())
         {
-            var seedSection = app.Configuration.GetSection("SeedAdmin");
-            var seedEmail = seedSection["Email"]!;
-            var seedPassword = seedSection["Password"]!;
-
-            var passwordHash = BCrypt.Net.BCrypt.HashPassword(seedPassword);
-            var tenantIds = await db.Tenants
-                .AsNoTracking()
-                .Select(t => t.Id)
-                .ToListAsync();
-
-            foreach (var tenantId in tenantIds)
-            {
-                await db.Database.ExecuteSqlRawAsync(
-                    """
-                    INSERT INTO "Users" ("Id", "Email", "PasswordHash", "Role", "TenantId", "CreatedAt")
-                    VALUES ({0}, {1}, {2}, {3}, {4}, {5})
-                    """,
-                    Guid.NewGuid(),
-                    seedEmail,
-                    passwordHash,
-                    Roles.Admin,
-                    tenantId,
-                    DateTime.UtcNow);
-            }
-
-            Log.Information(
-                "Seeded admin user ({Email}) for {TenantCount} tenant(s) via raw SQL",
-                seedEmail,
-                tenantIds.Count);
+            await SeedTenantDataAsync(db, app.Configuration);
         }
     }
 
     app.Run();
 
+    // ================================================================
     // Seeds platform-level data (not tenant-scoped) so both the in-memory
     // and PostgreSQL providers start with working defaults.
+    // ================================================================
     static async Task SeedPlatformDataAsync(
         AppDbContext db,
         IConfiguration configuration)
     {
         // Default envelope: roles + the actions each role is allowed.
-        // Actions are informational for now — enforcement is on the backlog.
+        // This is now a TEMPLATE — tenants copy these roles into their own
+        // role set when the envelope is assigned.
         if (!await db.Envelopes.AnyAsync())
         {
             db.Envelopes.Add(new Envelope
@@ -276,6 +372,7 @@ try
                         Name = Roles.Admin,
                         Actions =
                         [
+                            ActionCatalog.ViewWidgets,
                             ActionCatalog.ManageUsers,
                             ActionCatalog.CreateWidget,
                             ActionCatalog.EditWidget,
@@ -329,9 +426,10 @@ try
         }
         else
         {
-            // Assign the standard envelope to any tenant that doesn't have one.
+            // Assign the standard envelope to any active tenant that
+            // doesn't have one.
             var unassigned = await db.Tenants
-                .Where(t => t.EnvelopeId == null)
+                .Where(t => t.EnvelopeId == null && !t.IsDeleted)
                 .ToListAsync();
 
             foreach (var tenant in unassigned)
@@ -360,8 +458,110 @@ try
             await db.SaveChangesAsync();
         }
     }
+
+    // ================================================================
+    // Seeds tenant-scoped data (roles + an admin user per tenant) on
+    // PostgreSQL using raw SQL — EF Core cannot save multi-tenant entities
+    // at startup because Finbuckle's EnforceMultiTenant requires a tenant
+    // context that doesn't exist outside an HTTP request.
+    // ================================================================
+    static async Task SeedTenantDataAsync(
+        AppDbContext db,
+        IConfiguration configuration)
+    {
+        var tenantIds = await db.Tenants
+            .AsNoTracking()
+            .Where(t => !t.IsDeleted)
+            .Select(t => t.Id)
+            .ToListAsync();
+
+        foreach (var tenantId in tenantIds)
+        {
+            // Tenant roles: copy from the assigned envelope, or seed the
+            // built-in Admin/User roles when no envelope is assigned.
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "TenantRoles" ("Id", "TenantId", "EnvelopeRoleId", "Name", "Actions", "CreatedAt")
+                SELECT gen_random_uuid(), t."Id", ar."Id", ar."Name", ar."Actions", now()
+                FROM "Tenants" t
+                JOIN "Envelopes" e ON e."Id" = t."EnvelopeId"
+                JOIN "AppRoles" ar ON ar."EnvelopeId" = e."Id"
+                WHERE t."Id" = {0}
+                  AND NOT EXISTS (SELECT 1 FROM "TenantRoles" tr WHERE tr."TenantId" = t."Id")
+                """,
+                tenantId);
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "TenantRoles" ("Id", "TenantId", "EnvelopeRoleId", "Name", "Actions", "CreatedAt")
+                SELECT gen_random_uuid(), t."Id", NULL, r.name, r.actions, now()
+                FROM "Tenants" t
+                CROSS JOIN (VALUES
+                    ('Admin', ARRAY['view_widgets','manage_users','create_widget','edit_widget','delete_widget']::text[]),
+                    ('User', ARRAY['view_widgets']::text[])
+                ) AS r(name, actions)
+                WHERE t."Id" = {0}
+                  AND t."EnvelopeId" IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM "TenantRoles" tr WHERE tr."TenantId" = t."Id")
+                """,
+                tenantId);
+
+            // Platform-managed Superadmin role (all actions) for every
+            // tenant that doesn't have one yet.
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "TenantRoles" ("Id", "TenantId", "EnvelopeRoleId", "Name", "Actions", "IsSystem", "CreatedAt")
+                SELECT gen_random_uuid(), t."Id", NULL, 'Superadmin',
+                       ARRAY['view_widgets','create_widget','edit_widget','delete_widget','manage_users']::text[],
+                       true, now()
+                FROM "Tenants" t
+                WHERE t."Id" = {0}
+                  AND NOT EXISTS (SELECT 1 FROM "TenantRoles" tr WHERE tr."TenantId" = t."Id" AND tr."IsSystem")
+                """,
+                tenantId);
+        }
+
+        // Seed an admin user for every tenant that has none, assigned to the
+        // tenant's Admin role.
+        if (!await db.Users.IgnoreQueryFilters().AnyAsync())
+        {
+            var seedSection = configuration.GetSection("SeedAdmin");
+            var seedEmail = seedSection["Email"]!;
+            var seedPassword = seedSection["Password"]!;
+
+            var passwordHash = BCrypt.Net.BCrypt.HashPassword(seedPassword);
+
+            foreach (var tenantId in tenantIds)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """
+                    INSERT INTO "Users" ("Id", "Email", "PasswordHash", "RoleId", "TenantId", "CreatedAt")
+                    SELECT gen_random_uuid(), {0}, {1}, tr."Id", t."Id", now()
+                    FROM "Tenants" t
+                    JOIN "TenantRoles" tr ON tr."TenantId" = t."Id" AND lower(tr."Name") = 'admin'
+                    WHERE t."Id" = {2}
+                      AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u."TenantId" = t."Id")
+                    """,
+                    seedEmail,
+                    passwordHash,
+                    tenantId);
+            }
+
+            Log.Information(
+                "Seeded admin user ({Email}) for {TenantCount} tenant(s) via raw SQL",
+                seedEmail,
+                tenantIds.Count);
+        }
+    }
 }
 finally
 {
     Log.CloseAndFlush();
 }
+
+// Expose the Program class so WebApplicationFactory (integration tests)
+// can bootstrap the API.
+public partial class Program
+{
+}
+

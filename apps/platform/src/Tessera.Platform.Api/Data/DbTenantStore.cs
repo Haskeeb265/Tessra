@@ -32,7 +32,8 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
 
         return await db.Tenants
             .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Identifier == identifier);
+            .FirstOrDefaultAsync(
+                t => t.Identifier == identifier && !t.IsDeleted);
     }
 
     public async Task<Tenant?> GetByIdAsync(string id)
@@ -43,7 +44,7 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
 
         return await db.Tenants
             .AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == id);
+            .FirstOrDefaultAsync(t => t.Id == id && !t.IsDeleted);
     }
 
     public async Task<IEnumerable<Tenant>> GetAllAsync()
@@ -54,6 +55,7 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
 
         return await db.Tenants
             .AsNoTracking()
+            .Where(t => !t.IsDeleted)
             .ToListAsync();
     }
 
@@ -67,6 +69,7 @@ public class DbTenantStore : IMultiTenantStore<Tenant>
 
         return await db.Tenants
             .AsNoTracking()
+            .Where(t => !t.IsDeleted)
             .Skip(start)
             .Take(pageSize)
             .ToListAsync();

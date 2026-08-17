@@ -11,6 +11,7 @@ import {
   getEnvelopes,
   getStoredAuth,
   getTenants,
+  inviteTenantUser,
   logout,
   updateTenant,
 } from "@/lib/api";
@@ -139,6 +140,20 @@ export default function TenantsPage() {
       setTenants((prev) => (prev ? prev.filter((t) => t.id !== tenant.id) : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete tenant.");
+    }
+  }
+
+  // The first invite redeemed in a workspace becomes its platform-managed
+  // Superadmin; later platform invites default to Admin.
+  async function handleInvite(tenant: AdminTenant) {
+    const email = window.prompt(`Invite someone into ${tenant.name} (email):`);
+    if (!email || !email.trim()) return;
+    setError(null);
+    try {
+      const result = await inviteTenantUser(tenant.id, email.trim());
+      window.alert(result.message ?? "Invitation sent.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to send invitation.");
     }
   }
 
@@ -322,6 +337,13 @@ export default function TenantsPage() {
                         <div className="flex justify-end gap-2">
                           <Button variant="secondary" onClick={() => startEdit(tenant)}>
                             Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleInvite(tenant)}
+                            title="Invite by email — the first redemption becomes the workspace Superadmin"
+                          >
+                            Invite
                           </Button>
                           <Button variant="danger" onClick={() => handleDelete(tenant)}>
                             Delete

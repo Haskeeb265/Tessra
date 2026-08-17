@@ -1,6 +1,9 @@
+using System.Security.Claims;
+
 using Microsoft.EntityFrameworkCore;
 
 using Tessera.Platform.Api.Data;
+using Tessera.Platform.Api.Services;
 using Tessera.Platform.Domain.Models;
 
 namespace Tessera.Platform.Api.Endpoints;
@@ -12,13 +15,24 @@ public static class WidgetEndpoints
         var group = app.MapGroup("/widgets").RequireAuthorization();
 
         // ============================================================
-        // Widget CRUD
+        // Widget CRUD (action-enforced — see ActionCatalog)
         // ============================================================
 
         group.MapGet(
             "/",
-            async (AppDbContext db) =>
+            async (
+                AppDbContext db,
+                HttpContext http,
+                ClaimsPrincipal user) =>
             {
+                var denied = await ActionChecks.RequiresAsync(
+                    db, http, user, ActionCatalog.ViewWidgets);
+
+                if (denied is not null)
+                {
+                    return denied;
+                }
+
                 var widgets = await db.Widgets.ToListAsync();
 
                 return Results.Ok(widgets);
@@ -27,8 +41,20 @@ public static class WidgetEndpoints
 
         group.MapGet(
             "/{id:guid}",
-            async (Guid id, AppDbContext db) =>
+            async (
+                Guid id,
+                AppDbContext db,
+                HttpContext http,
+                ClaimsPrincipal user) =>
             {
+                var denied = await ActionChecks.RequiresAsync(
+                    db, http, user, ActionCatalog.ViewWidgets);
+
+                if (denied is not null)
+                {
+                    return denied;
+                }
+
                 var widget = await db.Widgets
                     .FirstOrDefaultAsync(w => w.Id == id);
 
@@ -40,8 +66,20 @@ public static class WidgetEndpoints
 
         group.MapPost(
             "/",
-            async (Widget widget, AppDbContext db) =>
+            async (
+                Widget widget,
+                AppDbContext db,
+                HttpContext http,
+                ClaimsPrincipal user) =>
             {
+                var denied = await ActionChecks.RequiresAsync(
+                    db, http, user, ActionCatalog.CreateWidget);
+
+                if (denied is not null)
+                {
+                    return denied;
+                }
+
                 db.Widgets.Add(widget);
                 await db.SaveChangesAsync();
 
@@ -51,8 +89,21 @@ public static class WidgetEndpoints
 
         group.MapPut(
             "/{id:guid}",
-            async (Guid id, Widget updatedWidget, AppDbContext db) =>
+            async (
+                Guid id,
+                Widget updatedWidget,
+                AppDbContext db,
+                HttpContext http,
+                ClaimsPrincipal user) =>
             {
+                var denied = await ActionChecks.RequiresAsync(
+                    db, http, user, ActionCatalog.EditWidget);
+
+                if (denied is not null)
+                {
+                    return denied;
+                }
+
                 var widget = await db.Widgets
                     .FirstOrDefaultAsync(w => w.Id == id);
 
@@ -72,8 +123,20 @@ public static class WidgetEndpoints
 
         group.MapDelete(
             "/{id:guid}",
-            async (Guid id, AppDbContext db) =>
+            async (
+                Guid id,
+                AppDbContext db,
+                HttpContext http,
+                ClaimsPrincipal user) =>
             {
+                var denied = await ActionChecks.RequiresAsync(
+                    db, http, user, ActionCatalog.DeleteWidget);
+
+                if (denied is not null)
+                {
+                    return denied;
+                }
+
                 var widget = await db.Widgets
                     .FirstOrDefaultAsync(w => w.Id == id);
 
@@ -87,7 +150,6 @@ public static class WidgetEndpoints
 
                 return Results.NoContent();
             })
-            .WithName("DeleteWidget")
-            .RequireAuthorization("AdminOnly");
+            .WithName("DeleteWidget");
     }
 }

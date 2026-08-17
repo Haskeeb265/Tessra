@@ -6,6 +6,7 @@ import {
   ApiError,
   TENANTS,
   type Envelope,
+  type MeInfo,
   type TenantUser,
   createUser,
   deleteUser,
@@ -14,7 +15,6 @@ import {
   getTenantEnvelope,
   getUsers,
   logout,
-  roleFromToken,
   updateUserRole,
 } from "@/lib/api";
 import { Alert, Button, Card, Field, TextInput } from "@/components/ui";
@@ -37,14 +37,17 @@ function formatDate(iso: string): string {
 export default function TeamPage() {
   const router = useRouter();
   const auth = useMemo(() => getStoredAuth(), []);
-  const role = roleFromToken(auth?.accessToken);
-  const isAdmin = role === "Admin";
   const tenant = TENANTS.find((t) => t.id === auth?.tenantId);
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [me, setMe] = useState<MeInfo | null>(null);
   const [users, setUsers] = useState<TenantUser[] | null>(null);
   const [envelope, setEnvelope] = useState<Envelope | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Same source the server enforces against (A4): the manage_users action,
+  // not a role name.
+  const canManage = me?.actions.includes("manage_users") ?? false;
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -52,8 +55,9 @@ export default function TeamPage() {
   const [creating, setCreating] = useState(false);
   const [changingRole, setChangingRole] = useState<string | null>(null);
 
+  // The platform-managed Superadmin role never appears in role pickers.
   const availableRoles = envelope
-    ? envelope.roles.map((r) => r.name)
+    ? envelope.roles.filter((r) => !r.isSystem).map((r) => r.name)
     : FALLBACK_ROLES;
 
   useEffect(() => {
@@ -65,13 +69,14 @@ export default function TeamPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [me, userList, env] = await Promise.all([
+        const [meInfo, userList, env] = await Promise.all([
           getMe(),
           getUsers(),
           getTenantEnvelope().catch(() => null),
         ]);
         if (cancelled) return;
-        setCurrentUserId(me.id);
+        setCurrentUserId(meInfo.id);
+        setMe(meInfo);
         setUsers(userList);
         setEnvelope(env);
         setError(null);
@@ -188,7 +193,9 @@ export default function TeamPage() {
           </div>
         )}
 
-        {isAdmin ? (
+        {me === null ? (
+          <p className="py-16 text-center text-sm text-mocha">Loading team…</p>
+        ) : canManage ? (
           <>
             {/* Add user */}
             <Card className="mb-10 p-6">
@@ -293,32 +300,39 @@ export default function TeamPage() {
                             </div>
                           </td>
                           <td className="px-6 py-4">
-                            <select
-                              value={user.role}
-                              disabled={isSelf || changingRole === user.id}
-                              onChange={(e) =>
-                                handleRoleChange(user, e.target.value)
-                              }
-                              className="cursor-pointer rounded-lg border border-latte bg-white/70 px-3 py-1.5 text-sm text-espresso outline-none transition focus:border-caramel disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {availableRoles.includes(user.role)
-                                ? availableRoles.map((r) => (
-                                    <option key={r} value={r}>
-                                      {r}
-                                    </option>
-                                  ))
-                                : [user.role, ...availableRoles].map((r) => (
-                                    <option key={r} value={r}>
-                                      {r}
-                                    </option>
-                                  ))}
-                            </select>
+                            {user.roleIsSystem ? (
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-roast px-2.5 py-1 text-xs font-bold text-cream">
+                                {user.role}
+                                <span className="font-medium opacity-75">(platform-managed)</span>
+                              </span>
+                            ) : (
+                              <select
+                                value={user.role}
+                                disabled={isSelf || changingRole === user.id}
+                                onChange={(e) =>
+                                  handleRoleChange(user, e.target.value)
+                                }
+                                className="cursor-pointer rounded-lg border border-latte bg-white/70 px-3 py-1.5 text-sm text-espresso outline-none transition focus:border-caramel disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {availableRoles.includes(user.role)
+                                  ? availableRoles.map((r) => (
+                                      <option key={r} value={r}>
+                                        {r}
+                                      </option>
+                                    ))
+                                  : [user.role, ...availableRoles].map((r) => (
+                                      <option key={r} value={r}>
+                                        {r}
+                                      </option>
+                                    ))}
+                              </select>
+                            )}
                           </td>
                           <td className="px-6 py-4 text-mocha">
                             {formatDate(user.createdAt)}
                           </td>
                           <td className="px-6 py-4 text-right">
-                            {!isSelf && (
+                            {!isSelf && !user.roleIsSystem && (
                               <button
                                 onClick={() => handleDelete(user)}
                                 className="text-xs font-semibold text-red-700 hover:underline"
@@ -344,9 +358,10 @@ export default function TeamPage() {
               Admins only
             </h2>
             <p className="mx-auto mt-2 max-w-sm text-sm text-mocha">
-              You&apos;re signed in as <span className="font-semibold">{role}</span>.
-              Only users with the <span className="font-semibold">Admin</span> role can
-              manage the team. Ask your workspace admin to change your role.
+              You&apos;re signed in as <span className="font-semibold">{me.role}</span>.
+              Only members whose role includes the{" "}
+              <span className="font-semibold">manage_users</span> action can manage
+              the team. Ask your workspace admin to change your role.
             </p>
           </Card>
         )}

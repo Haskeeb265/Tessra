@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Tessera.Platform.Api.Data;
@@ -12,9 +13,11 @@ using Tessera.Platform.Api.Data;
 namespace Tessera.Platform.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260816232436_TenantOwnedRolesAndSecurity")]
+    partial class TenantOwnedRolesAndSecurity
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -246,9 +249,6 @@ namespace Tessera.Platform.Api.Migrations
 
                     b.Property<Guid?>("EnvelopeRoleId")
                         .HasColumnType("uuid");
-
-                    b.Property<bool>("IsSystem")
-                        .HasColumnType("boolean");
 
                     b.Property<string>("Name")
                         .IsRequired()

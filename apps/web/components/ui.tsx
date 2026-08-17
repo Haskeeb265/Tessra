@@ -74,13 +74,15 @@ export function Alert({
   kind,
   children,
 }: {
-  kind: "error" | "info";
+  kind: "error" | "info" | "success";
   children: ReactNode;
 }) {
   const styles =
     kind === "error"
       ? "border-red-200 bg-red-50 text-red-800"
-      : "border-latte bg-beige text-roast";
+      : kind === "success"
+        ? "border-green-200 bg-green-50 text-green-800"
+        : "border-latte bg-beige text-roast";
   return (
     <div className={`rounded-xl border px-4 py-3 text-sm ${styles}`}>
       {children}

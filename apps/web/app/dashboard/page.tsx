@@ -13,7 +13,6 @@ import {
   getStoredAuth,
   getWidgets,
   logout,
-  roleFromToken,
   updateWidget,
 } from "@/lib/api";
 import { Alert, Button, Card, Field, TextArea, TextInput } from "@/components/ui";
@@ -43,8 +42,6 @@ function formatDate(iso: string): string {
 export default function DashboardPage() {
   const router = useRouter();
   const auth = useMemo(() => getStoredAuth(), []);
-  const role = roleFromToken(auth?.accessToken);
-  const isAdmin = role === "Admin";
 
   const tenant = TENANTS.find((t) => t.id === auth?.tenantId);
 
@@ -56,6 +53,12 @@ export default function DashboardPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<WidgetDraft>(emptyDraft);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // UI is driven by the same actions the server enforces (A4).
+  const actions = me?.actions ?? [];
+  const canCreate = actions.includes("create_widget");
+  const canEdit = actions.includes("edit_widget");
+  const canDelete = actions.includes("delete_widget");
 
   useEffect(() => {
     if (!auth) {
@@ -164,7 +167,7 @@ export default function DashboardPage() {
           <p className="mt-2 text-sm text-mocha">
             Signed in as <span className="font-semibold text-roast">{auth?.email}</span> ·{" "}
             workspace <span className="font-semibold text-roast">{tenant?.name}</span> · role{" "}
-            <span className="font-semibold text-roast">{role ?? "User"}</span>
+            <span className="font-semibold text-roast">{me?.role ?? "—"}</span>
           </p>
           {me && me.actions.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -188,6 +191,7 @@ export default function DashboardPage() {
         )}
 
         {/* Create widget */}
+        {canCreate && (
         <Card className="mb-10 p-6">
           <h2 className="mb-4 font-serif text-xl font-bold text-espresso">
             Brew a new widget
@@ -221,6 +225,7 @@ export default function DashboardPage() {
             </div>
           </form>
         </Card>
+        )}
 
         {/* Widgets list */}
         {widgets === null ? (
@@ -234,8 +239,10 @@ export default function DashboardPage() {
               No widgets yet
             </h2>
             <p className="mx-auto mt-2 max-w-sm text-sm text-mocha">
-              This workspace is empty. Create your first widget above and watch
-              it appear here, scoped to {tenant?.name}.
+              This workspace has no widgets yet.{" "}
+              {canCreate
+                ? "Create the first one above."
+                : "Ask a workspace admin to create the first one."}
             </p>
           </Card>
         ) : (
@@ -292,10 +299,12 @@ export default function DashboardPage() {
                       {widget.description || "No description."}
                     </p>
                     <div className="mt-4 flex gap-2 border-t border-latte/60 pt-4">
-                      <Button variant="secondary" onClick={() => startEdit(widget)}>
-                        Edit
-                      </Button>
-                      {isAdmin && (
+                      {canEdit && (
+                        <Button variant="secondary" onClick={() => startEdit(widget)}>
+                          Edit
+                        </Button>
+                      )}
+                      {canDelete && (
                         <Button
                           variant="danger"
                           onClick={() => handleDelete(widget.id)}
@@ -311,10 +320,10 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {!isAdmin && (
+        {!canCreate && !canEdit && !canDelete && (
           <p className="mt-10 text-center text-xs text-mocha/80">
-            You&apos;re a regular user — deleting widgets and managing the team are
-            admin-only actions.
+            Your role is view-only for widgets. Ask a workspace admin to grant
+            you additional actions if you need them.
           </p>
         )}
       </div>

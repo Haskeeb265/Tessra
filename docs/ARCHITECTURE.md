@@ -1,6 +1,6 @@
 # Tessera — Architecture
 
-> **Last verified against the code**: 2026-08-14
+> **Last verified against the code**: 2026-08-17
 > **Read this first.** This document is the single source of truth for how the
 > system fits together. If something here disagrees with what you see in the
 > code, the code is newer — update this file.
@@ -78,15 +78,16 @@ These are the concepts that have caused confusion before. Get them right.
 | **`Tenant.Identifier`** | **External** lookup key, e.g. `"alpha-corp"`. This is what clients send in the `X-Tenant-Id` header. **`Id` and `Identifier` are different values for the seeded tenants.** |
 | **`X-Tenant-Id` header** | Required on every tenant-scoped request (except `/health`, `/openapi`, `/admin`, `/tenants`). Contains the **identifier**, e.g. `alpha-corp`. |
 | **Widget** | **Placeholder demo resource** — a "todo" equivalent used to prove tenant isolation, auth, and RBAC work end-to-end. **Not a product feature.** Its entire tenant-isolation mechanism is Finbuckle (see §5). |
-| **Envelope** | A bundle of **roles + their actions**, created by a superadmin and assigned to a tenant. Defines which roles a tenant can assign to its users. |
-| **AppRole** | A role **inside an envelope** (`Envelopes 1—n AppRoles`). Has a `Name` and an `Actions` list (`text[]`). |
-| **Action** | A named Tessera capability (e.g. `create_widget`, `edit_widget`, `manage_users`). **Catalog-only today — NOT enforced** (see §13 backlog). |
-| **User** | A tenant-scoped user (`Users` table): bcrypt-hashed password, single `Role` string, `TenantId`. Auth via `/auth/*`. |
+| **Envelope** | A bundle of **roles + their actions**, created by a superadmin and assigned to a tenant. **Template** semantics: assigning an envelope *copies* its roles into the tenant's own role set; later envelope edits don't cascade. |
+| **AppRole** | A role **inside an envelope** (`Envelopes 1—n AppRoles`) — the template definition. Has a `Name` and an `Actions` list (`text[]`). |
+| **TenantRole** | A **tenant-owned copy** of a template role (`TenantRoles` table). Tenants CRUD these and assign them to users via `User.RoleId`. Copy happens at assignment; no auto-sync. |
+| **Action** | A named Tessera capability (e.g. `view_widgets`, `create_widget`, `edit_widget`, `delete_widget`, `manage_users`). **Enforced server-side** by `ActionChecks` (see §12). |
+| **User** | A tenant-scoped user (`Users` table): bcrypt-hashed password, `RoleId` (FK → `TenantRoles`), `TenantId`. Auth via `/auth/*`. |
 | **AdminUser** | A **platform-level superadmin** (`AdminUsers` table): no tenant binding, bcrypt hash. Auth via `/admin/auth/login`. `admin@…` (tenant) vs `superadmin@…` (platform) are **different tables and accounts**. |
-| **Roles constants** | Built-ins in `User.cs`: `Admin`, `User`, `SuperAdmin`. Used by authorization policies (`AdminOnly`, `SuperAdminOnly`). |
-| **Envelope roles** | Roles defined per-envelope (e.g. `Manager`, `Editor`). Assigned to users by a tenant admin; validated against the tenant's envelope. A user's `Role` string must come from the envelope (or the built-ins when no envelope is assigned). |
-| **Bootstrap rule** | The **first user to register in a workspace becomes its `Admin`** (`AuthService.RegisterAsync`). Needed because `EnforceMultiTenant` (Finbuckle) makes seeding tenant users at startup impossible without raw SQL. |
-| **Tenant admin** | A `User` whose `Role == "Admin"`. Can manage the team (`/tenant/users`) and delete widgets. |
+| **Roles constants** | Built-ins in `User.cs`: `Admin`, `User`, `SuperAdmin`. Only `SuperAdmin` is used as a claim-based policy (`SuperAdminOnly`); tenant authorization is **action-based**, not name-based. |
+| **Envelope roles** | Roles defined per-envelope (e.g. `Manager`, `Editor`). Copied into a tenant's `TenantRoles` at assignment (or the built-ins `Admin`/`User` when no envelope is assigned); the tenant owns the copies. |
+| **Tenant hierarchy** | Three tiers: **Superadmin** (platform-managed role — all actions, not renameable/editable/deletable, granted to the first invite redeemed in a workspace), **Admin** (tenant-created assistants, `manage_users`), and **User**/custom roles. Onboarding is **invite-only** — open self-registration was removed. |
+| **Tenant admin** | A `User` whose role includes the `manage_users` action. Can manage roles, users, and invitations via `/tenant/*`. |
 | **Superadmin** | An `AdminUser`. Can manage tenants + envelopes via `/admin/*`. |
 
 ---
@@ -125,7 +126,7 @@ flowchart LR
 > 📄 **Full table-by-table reference** (columns, types, indexes, FKs): see
 > **[`docs/TABLES.md`](TABLES.md)**.
 
-Eight tables. Tenant-scoped tables (`Users`, `Widgets`, `RefreshTokens`) carry a
+Nine tables. Tenant-scoped tables (`Users`, `Widgets`, `RefreshTokens`, `TenantRoles`, `Invitations`) carry a
 `TenantId` and are marked `IsMultiTenant()` → Finbuckle adds a global query
 filter. Platform-level tables (`Tenants`, `Envelopes`, `AppRoles`, `AdminUsers`)
 are **not** multi-tenant.
@@ -134,17 +135,23 @@ are **not** multi-tenant.
 erDiagram
     Tenant ||--o| Envelope : "assigned"
     Envelope ||--o{ AppRole : "contains"
+    Tenant ||--o{ TenantRole : "owns (copied from envelope)"
+    TenantRole ||--o{ User : "assigned (RoleId)"
     Tenant ||--o{ User : "has"
     Tenant ||--o{ Widget : "owns"
     Tenant ||--o{ RefreshToken : "has"
     User ||--o{ RefreshToken : "issued to"
+    Tenant ||--o{ Invitation : "sent"
+    Invitation }o--|| TenantRole : "grants"
 
     Tenant {
         string Id PK "internal key, e.g. 'alpha'"
         string Identifier UK "external, e.g. 'alpha-corp' (X-Tenant-Id)"
         string Name
         string ConnectionString "unused"
-        guid EnvelopeId FK "assigned envelope (nullable)"
+        guid EnvelopeId FK "assigned template (nullable)"
+        string Status "Active | Suspended"
+        bool IsDeleted "soft delete"
         datetime CreatedAt
     }
     Envelope {
@@ -157,14 +164,26 @@ erDiagram
         guid Id PK
         guid EnvelopeId FK "cascade delete"
         string Name "unique per envelope"
-        string Actions "text[] — catalog only, not enforced"
+        string Actions "text[] — template, copied to tenants"
+    }
+    TenantRole {
+        guid Id PK
+        string TenantId FK "multi-tenant filter"
+        guid EnvelopeRoleId "source AppRole (nullable, informational)"
+        string Name "unique per tenant"
+        string Actions "text[] — enforced server-side"
+        datetime CreatedAt
     }
     User {
         guid Id PK
         string Email
         string PasswordHash "bcrypt"
-        string Role "from envelope or Admin/User"
+        guid RoleId FK "→ TenantRoles.Id (action-based authz)"
         string TenantId FK "multi-tenant filter"
+        int TokenVersion "JWT token_version claim (A5)"
+        bool IsDeleted "soft delete"
+        bool EmailVerified "C2"
+        string MfaSecret "TOTP, nullable"
         datetime CreatedAt
     }
     AdminUser {
@@ -184,18 +203,29 @@ erDiagram
         guid Id PK
         guid UserId FK
         string Token "64 random bytes, single use"
+        guid FamilyId "rotation family — reuse detection (C1)"
         datetime ExpiresAt "7 days"
         bool IsRevoked
         string TenantId FK "multi-tenant filter"
         datetime CreatedAt
     }
+    Invitation {
+        guid Id PK
+        string TenantId FK "multi-tenant filter"
+        string Email "invitee — token binds to it"
+        guid RoleId FK "→ TenantRoles.Id (role granted)"
+        string TokenHash "SHA-256 of raw token (C2)"
+        datetime ExpiresAt "72 h"
+        datetime UsedAt "single-use"
+        datetime CreatedAt
+    }
 ```
 
 **Deletion rules** (admin endpoints):
-- **Delete tenant** → cascades: removes the tenant's `Users` and `RefreshTokens`, then the `Tenant` row. PostgreSQL uses raw SQL (bypasses `EnforceMultiTenant`); InMemory uses `MultiTenantDbContext.Create<TContext,TTenantInfo>` bound to the deleted tenant.
-- **Delete envelope** → first **unassigns** it from all tenants (`Tenant.EnvelopeId = null`), then deletes the envelope and its roles (cascade).
+- **Delete tenant** → hard-deletes the tenant's `Widgets`, `RefreshTokens`, and `Invitations`; **soft-deletes** its `Users` (`IsDeleted`, `RoleId = NULL`) and the `Tenant` row itself (B1/B4). PostgreSQL uses raw SQL (bypasses `EnforceMultiTenant`); InMemory uses `MultiTenantDbContext.Create<TContext,TTenantInfo>` bound to the deleted tenant.
+- **Delete envelope** → first **unassigns** it from all tenants (`Tenant.EnvelopeId = null`), then deletes the envelope and its roles (cascade). Tenant role copies are untouched.
 
-Migrations: `InitialCreate` (Widgets) → `AddAuthTables` (Users, RefreshTokens) → `AddUserRole` (Role column) → `AddPlatformAdmin` (Tenants, Envelopes, AppRoles, AdminUsers + `Tenant.EnvelopeId`). Applied on startup with `IsRelational()` guard.
+Migrations: `InitialCreate` (Widgets) → `AddAuthTables` (Users, RefreshTokens) → `AddUserRole` (Role column) → `AddPlatformAdmin` (Tenants, Envelopes, AppRoles, AdminUsers + `Tenant.EnvelopeId`) → `TenantOwnedRolesAndSecurity` (TenantRoles, Invitations; `Users.RoleId` backfilled from `Role` then dropped; `TokenVersion`/soft-delete/email-verify/MFA columns; `RefreshTokens.FamilyId`; `Tenants.Status`/`IsDeleted`; filtered unique `(Email, TenantId)` index; `xmin` rowversions). Applied on startup gated by `Database:AutoMigrate` and `IsRelational()`.
 
 ### 5.3 Middleware pipeline (exact order)
 
@@ -207,11 +237,14 @@ flowchart LR
     HTTPS --> EX[1. ExceptionHandlingMiddleware]
     EX --> RL[2. RequestLoggingMiddleware]
     RL --> CORS[3. CORS 'WebApp']
-    CORS --> TV[4. TenantValidationMiddleware]
-    TV --> MT[5. UseMultiTenant]
-    MT --> AU[6. UseAuthentication]
-    AU --> TC[7. TenantClaimValidationMiddleware]
-    TC --> AZ[8. UseAuthorization]
+    CORS --> RATE[4. RateLimiter 'auth']
+    RATE --> TV[5. TenantValidationMiddleware]
+    TV --> MT[6. UseMultiTenant]
+    MT --> SUS[7. TenantSuspensionMiddleware]
+    SUS --> AU[8. UseAuthentication]
+    AU --> TC[9. TenantClaimValidationMiddleware]
+    TC --> TVM[10. TokenVersionValidationMiddleware]
+    TVM --> AZ[11. UseAuthorization]
     AZ --> EP[Endpoint]
 ```
 
@@ -220,12 +253,15 @@ flowchart LR
 | 0 | `UseHttpsRedirection` | Redirects HTTP → HTTPS when configured (dev: no-op over plain http). | — |
 | 1 | `ExceptionHandlingMiddleware` | Wraps everything after it in try/catch; maps exceptions → HTTP status + `ApiErrorResponse` JSON (see §11). | 400/404/403/499/500/502/501 |
 | 2 | `RequestLoggingMiddleware` (Observability) | Logs method, path, status, duration for every request. | — |
-| 3 | CORS `WebApp` | Allows origins `http(s)://localhost:3000` and `:3001`, any header/method. Runs **before** tenant validation so browser preflights (OPTIONS, no custom headers) aren't rejected. | — |
-| 4 | `TenantValidationMiddleware` | Requires `X-Tenant-Id` header on all paths **except** `/health`, `/openapi`, `/admin`, `/tenants`. | **400** (missing header) |
-| 5 | `UseMultiTenant()` | Finbuckle: resolves the tenant from the header via the **`DbTenantStore`** and sets the per-request tenant context. | 500 if store fails |
-| 6 | `UseAuthentication()` | Validates the Bearer JWT (issuer, audience, lifetime, HMAC-SHA256 signature, zero clock skew). | **401** (missing/invalid token) |
-| 7 | `TenantClaimValidationMiddleware` | For authenticated requests: compares the JWT's **`tenant_identifier`** claim to the `X-Tenant-Id` header. Blocks cross-tenant token reuse. Superadmin JWTs have no tenant claim → skipped. | **403** (mismatch) |
-| 8 | `UseAuthorization()` | Enforces policies: `AdminOnly` (role `Admin`), `SuperAdminOnly` (role `SuperAdmin`). | **403** (insufficient role) |
+| 3 | CORS `WebApp` | Origins come from `Cors:AllowedOrigins` (defaults: `http(s)://localhost:3000` and `:3001`). Runs **before** tenant validation so browser preflights (OPTIONS, no custom headers) aren't rejected. | — |
+| 4 | `UseRateLimiter()` | Fixed-window per-IP rate limiter on `/auth/*` endpoints (C4). Limits live in `RateLimiting:*`; 429 when exceeded. | **429** |
+| 5 | `TenantValidationMiddleware` | Requires `X-Tenant-Id` header on all paths **except** `/health`, `/ready`, `/openapi`, `/admin`, `/tenants`. | **400** (missing header) |
+| 6 | `UseMultiTenant()` | Finbuckle: resolves the tenant from the header via the **`DbTenantStore`** and sets the per-request tenant context. | 500 if store fails |
+| 7 | `TenantSuspensionMiddleware` | Blocks tenant-scoped requests when the resolved tenant's `Status` is `Suspended` (B3). Platform paths are exempt even with a stray header. | **403** (suspended) |
+| 8 | `UseAuthentication()` | Validates the Bearer JWT (issuer, audience, lifetime, HMAC-SHA256 signature, zero clock skew). | **401** (missing/invalid token) |
+| 9 | `TenantClaimValidationMiddleware` | For authenticated requests: compares the JWT's **`tenant_identifier`** claim to the `X-Tenant-Id` header. Blocks cross-tenant token reuse. Superadmin JWTs have no tenant claim → skipped. | **403** (mismatch) |
+| 10 | `TokenVersionValidationMiddleware` | For authenticated requests: compares the JWT's **`token_version`** claim to the user's current `TokenVersion` (A5). Demoted/deleted users lose access immediately. Superadmin JWTs carry no claim → skipped; auth/recovery endpoints (`/auth/login`, `/auth/refresh`, …) are exempt. | **401** (stale token) |
+| 11 | `UseAuthorization()` | Enforces the `SuperAdminOnly` policy (role `SuperAdmin`) on `/admin/*`. Tenant authorization is **action-based** inside handlers (`ActionChecks`). | **403** (insufficient) |
 
 ### 5.4 Tenant resolution — how a request gets its tenant
 
@@ -268,12 +304,14 @@ using scoped `AppDbContext` instances. Registered via
 
 | | Tenant user JWT | Superadmin JWT |
 |---|---|---|
-| Issued by | `POST /auth/register`, `/auth/login`, `/auth/refresh` | `POST /admin/auth/login` |
-| Claims | `sub`, `email`, `ClaimTypes.Role` (e.g. `Admin`), `tenant_id` (internal, e.g. `"alpha"`), `tenant_identifier` (external, e.g. `"alpha-corp"`), `jti`, `iat` | `sub`, `email`, `role = SuperAdmin`, `jti`, `iat` — **no tenant claims** |
-| Lifetime | 15 minutes (`Jwt:AccessTokenExpirationMinutes`) | 12 hours (`Jwt:AdminAccessTokenExpirationHours`) |
-| Refresh | Yes — 64 random bytes, 7 days, stored in `RefreshTokens`, single-use (revoked on refresh) | **No** — portal re-logins on expiry |
-| Signing | HMAC-SHA256, symmetric dev key `Jwt:SecretKey` | same |
-| Enforced by | `AdminOnly` policy + `TenantClaimValidationMiddleware` | `SuperAdminOnly` policy |
+| Issued by | `POST /auth/register`, `/auth/login` (+ MFA step), `/auth/refresh` | `POST /admin/auth/login` |
+| Claims | `sub`, `email`, `ClaimTypes.Role` (role **name**, informational), `role_id` (→ `TenantRoles.Id`), `token_version`, `tenant_id` (internal, e.g. `"alpha"`), `tenant_identifier` (external, e.g. `"alpha-corp"`), `jti`, `iat` | `sub`, `email`, `role = SuperAdmin`, `jti`, `iat` — **no tenant claims** |
+| Lifetime | 15 minutes (`Jwt:AccessTokenExpirationMinutes`) | 4 hours (`Jwt:AdminAccessTokenExpirationHours`) |
+| Refresh | Yes — 64 random bytes, 7 days, stored in `RefreshTokens`, rotated per use with **family reuse detection** (C1) | **No** — portal re-logins on expiry |
+| Signing | HMAC-SHA256, symmetric key `Jwt:SecretKey` (env `Jwt__SecretKey`; startup fails if unset — C5) | same |
+| Enforced by | Action-based checks (`ActionChecks`) + `TenantClaimValidationMiddleware` + `TokenVersionValidationMiddleware` | `SuperAdminOnly` policy |
+
+Also issued: a short-lived **MFA token** (5 min, claim `mfa=true`) after the password step of an MFA-protected login; it is exchanged at `POST /auth/mfa` for a normal token pair.
 
 The client keeps tokens in `localStorage` (`tessera.auth` for business portal,
 `tessera.admin` for platform portal) — **not** httpOnly cookies.
@@ -287,20 +325,27 @@ sequenceDiagram
     participant P as Platform API
     participant DB as PostgreSQL
 
-    U->>W: Register (email, password, workspace)
-    W->>P: POST /auth/register + X-Tenant-Id
-    P->>DB: email already in this tenant? (query filter scopes it)
-    P->>DB: INSERT User (bcrypt; role = Admin if this is the tenant's first user)
-    P->>DB: INSERT RefreshToken (64 random bytes, 7d)
+    U->>W: Open emailed invite link (register?invite=…&tenant=…)
+    W->>P: POST /auth/register + X-Tenant-Id (invite-only)
+    P->>DB: invite valid? (email match, unused, unexpired)
+    P->>DB: INSERT User (bcrypt; RoleId from invite — first redemption<br/>in the workspace becomes its platform-managed Superadmin)
+    P->>DB: INSERT RefreshToken (64 random bytes, 7d, new FamilyId)
     P-->>W: 201 { accessToken (15m), refreshToken }
     W->>W: save tokens + tenantId to localStorage, redirect /dashboard
 
     U->>W: Log in
     W->>P: POST /auth/login + X-Tenant-Id
     P->>DB: find user by email (tenant-scoped), bcrypt verify
-    P-->>W: 200 { accessToken, refreshToken }
+    alt MFA enabled
+        P-->>W: 200 { mfaRequired: true, mfaToken (5m) }
+        U->>W: Enter TOTP code
+        W->>P: POST /auth/mfa { mfaToken, code }
+        P-->>W: 200 { accessToken, refreshToken }
+    else
+        P-->>W: 200 { accessToken, refreshToken }
+    end
 
-    Note over W,P: Any API call returning 401 → POST /auth/refresh (revokes old token)<br/>→ new pair → retry original call once. (lib/api.ts)
+    Note over W,P: Any API call returning 401 → POST /auth/refresh (rotates family)<br/>→ new pair → retry original call once. (lib/api.ts)
 ```
 
 ### 6.3 Superadmin flow: envelopes → tenants
@@ -358,34 +403,50 @@ Errors use `ApiErrorResponse` (see §11).
 
 | Method | Path | Tenant header | Auth | Purpose |
 |---|---|---|---|---|
-| GET | `/health` | no | public | Liveness: `{ status: "healthy", timestamp }` (used by the HealthBadge) |
-| GET | `/tenants` | no | public | `[{ id: identifier, name }]` for the workspace picker |
+| GET | `/health` | no | public | Liveness: `{ status: "healthy", timestamp }` (HealthBadge) |
+| GET | `/ready` | no | public | Readiness: checks DB (`CanConnectAsync`), 503 when unreachable |
+| GET | `/tenants` | no | public | `[{ id: identifier, name }]` for the workspace picker (non-deleted only) |
 | GET | `/openapi` | no | public | OpenAPI JSON (dev only) |
-| POST | `/auth/register` | **yes** | public | Create tenant user → token pair (first user becomes Admin) |
-| POST | `/auth/login` | **yes** | public | Verify credentials → token pair |
-| POST | `/auth/refresh` | **yes** | public | Exchange refresh token → new pair (old revoked) |
-| POST | `/auth/promote` | yes | `AdminOnly` | Set a user's role to `Admin` |
-| GET | `/widgets` | yes | tenant user | List tenant's widgets (filtered) |
-| GET | `/widgets/{id:guid}` | yes | tenant user | Get one widget |
-| POST | `/widgets` | yes | tenant user | Create widget |
-| PUT | `/widgets/{id:guid}` | yes | tenant user | Update widget |
-| DELETE | `/widgets/{id:guid}` | yes | `AdminOnly` | Delete widget |
-| GET | `/tenant/me` | yes | tenant user | `{ id, email, role, actions[], tenantId, tenantIdentifier }` — actions from the user's envelope role |
-| GET | `/tenant/envelope` | yes | tenant user | The workspace's envelope (roles + actions) |
-| GET | `/tenant/users` | yes | `AdminOnly` | List workspace users (no password hash) |
-| POST | `/tenant/users` | yes | `AdminOnly` | Add user `{ email, password, role }` — role must be in the tenant's envelope |
-| PUT | `/tenant/users/{id:guid}` | yes | `AdminOnly` | Change a user's role (cannot change your own; role validated against envelope) |
-| DELETE | `/tenant/users/{id:guid}` | yes | `AdminOnly` | Remove a user (cannot remove yourself) |
-| POST | `/admin/auth/login` | no | public | Superadmin login → `SuperAdmin` JWT |
-| GET/POST | `/admin/tenants` | no | `SuperAdminOnly` | List / create tenants |
-| PUT/DELETE | `/admin/tenants/{id}` | no | `SuperAdminOnly` | Update / delete tenant (delete cascades users + tokens) |
-| GET/POST | `/admin/envelopes` | no | `SuperAdminOnly` | List / create envelopes (roles + actions) |
-| PUT/DELETE | `/admin/envelopes/{id:guid}` | no | `SuperAdminOnly` | Update / delete envelope (delete unassigns tenants first) |
+| POST | `/auth/register` | **yes** | public | Redeem an invitation (invite-only): validates the emailed token (email match, unused, unexpired) and creates the user with the invite's role — the first redemption in a workspace becomes its Superadmin. Rate-limited |
+| POST | `/auth/login` | **yes** | public | Verify credentials → token pair, or `{ mfaRequired, mfaToken }` when MFA is enabled. Generic errors (C3). Rate-limited |
+| POST | `/auth/mfa` | **yes** | public | Complete MFA login with TOTP `code` → token pair. Rate-limited |
+| POST | `/auth/refresh` | **yes** | public | Rotate refresh token → new pair; replay of a used token revokes the family (C1). Rate-limited |
+| POST | `/auth/logout` | **yes** | public | Server-side revoke of the presented refresh token's family. Rate-limited |
+| POST | `/auth/change-password` | yes | tenant user | Change password; bumps `token_version`, revokes all sessions |
+| POST | `/auth/forgot-password` | **yes** | public | Email a reset link (message-only reply). Rate-limited |
+| POST | `/auth/reset-password` | **yes** | public | Set a new password with the emailed token. Rate-limited |
+| POST | `/auth/verify-email` | **yes** | public | Verify an email address with the emailed token (C2). Rate-limited |
+| POST | `/auth/mfa/enroll` | yes | tenant user | Generate a TOTP secret + otpauth URI |
+| POST | `/auth/mfa/verify` | yes | tenant user | Confirm a code → enable MFA (bumps `token_version`) |
+| POST | `/auth/mfa/disable` | yes | tenant user | Disable MFA with a current code |
+| POST | `/auth/promote` | yes | `manage_users` | Legacy: set a user's role to Admin |
+| GET | `/widgets` | yes | `view_widgets` | List tenant's widgets (filtered) |
+| GET | `/widgets/{id:guid}` | yes | `view_widgets` | Get one widget |
+| POST | `/widgets` | yes | `create_widget` | Create widget |
+| PUT | `/widgets/{id:guid}` | yes | `edit_widget` | Update widget |
+| DELETE | `/widgets/{id:guid}` | yes | `delete_widget` | Delete widget |
+| GET | `/tenant/me` | yes | tenant user | `{ id, email, role, roleId, actions[], tenantId, tenantIdentifier }` — actions resolved live from `RoleId` |
+| GET | `/tenant/envelope` | yes | tenant user | The workspace's role set (kept as "envelope" for backward compatibility) |
+| GET/POST | `/tenant/roles` | yes | list: any · write: `manage_users` | List / create tenant roles (actions validated against `ActionCatalog`) |
+| PUT/DELETE | `/tenant/roles/{id:guid}` | yes | `manage_users` | Update / delete a role; delete is **blocked while users are assigned** (400) |
+| GET/POST | `/tenant/invites` | yes | `manage_users` | List / create role-bound invitations (emailed link, 72 h, single-use) |
+| GET | `/tenant/users` | yes | `manage_users` | List workspace users (no password hash) |
+| POST | `/tenant/users` | yes | `manage_users` | Add user `{ email, password, role }` — role must exist in the tenant's role set |
+| PUT | `/tenant/users/{id:guid}` | yes | `manage_users` | Change a user's role (cannot change your own; bumps `token_version`, revokes sessions) |
+| DELETE | `/tenant/users/{id:guid}` | yes | `manage_users` | Remove a user (cannot remove yourself; soft delete) |
+| POST | `/admin/auth/login` | no | public | Superadmin login → `SuperAdmin` JWT (4 h) |
+| GET/POST | `/admin/tenants` | no | `SuperAdminOnly` | List / create tenants (envelope assignment copies template roles into `TenantRoles`) |
+| POST | `/admin/tenants/{id}/invites` | no | `SuperAdminOnly` | Invite by email; the first redemption in a workspace becomes its Superadmin, later platform invites default to Admin |
+| PUT/DELETE | `/admin/tenants/{id}` | no | `SuperAdminOnly` | Update / delete tenant (delete hard-deletes widgets/tokens/invites, soft-deletes users + tenant) |
+| PUT | `/admin/tenants/{id}/status` | no | `SuperAdminOnly` | Suspend / reactivate a tenant (`Active` / `Suspended`) |
+| GET/POST | `/admin/envelopes` | no | `SuperAdminOnly` | List / create envelope templates (roles + actions) |
+| PUT/DELETE | `/admin/envelopes/{id:guid}` | no | `SuperAdminOnly` | Update / delete envelope (delete unassigns tenants first; tenant role copies untouched) |
 
 **Guards worth knowing** (return 400 `{ error }`):
 - Tenant identifier must match `^[a-z0-9-]+$` and be unique.
 - Envelope must have ≥ 1 role; role names unique within the envelope.
-- `POST /tenant/users` validates email format, password ≥ 8 chars, role ∈ envelope.
+- Role names unique per tenant; actions must come from `ActionCatalog`.
+- `POST /tenant/users` validates email format, password ≥ 8 chars, role exists in the workspace.
 
 ---
 
@@ -398,8 +459,8 @@ palette).
 | Route | File | Purpose |
 |---|---|---|
 | `/` | `app/page.tsx` | Landing page with `HealthBadge` (polls `GET /health`) + login/register CTAs |
-| `/login` | `app/login/page.tsx` | Workspace login (tenant picker + credentials) |
-| `/register` | `app/register/page.tsx` | Workspace signup (tenant picker + password confirmation) |
+| `/login` | `app/login/page.tsx` | Workspace login (tenant picker + credentials; TOTP code step when MFA is enabled) |
+| `/register` | `app/register/page.tsx` | Workspace signup; reads the `?invite=` token from the email link to prefill email and redeem the invite |
 | `/dashboard` | `app/dashboard/page.tsx` | Widget CRUD + role badge + "your role allows" action pills (`GET /tenant/me`) |
 | `/dashboard/users` | `app/dashboard/users/page.tsx` | **Team** (Admin-only UI): list users, add user (role from envelope), change role, remove |
 
@@ -478,11 +539,15 @@ and behavior differs slightly (see gotchas).
 | Tenants `alpha-corp` (Id `alpha`), `beta-industries` (Id `beta`) | ✅ | ✅ | `SeedPlatformDataAsync` |
 | Standard envelope assigned to tenants without one | ✅ | ✅ | `SeedPlatformDataAsync` |
 | Superadmin `superadmin@tessera.com` / `Admin123!` (`AdminUsers`) | ✅ | ✅ | `SeedPlatformDataAsync` |
-| Tenant admin `admin@tessera.com` / `Admin123!` per tenant (`Users`) | ❌ | ✅ | Raw SQL in `Program.cs` (Postgres only — see gotcha #4) |
+| Tenant admin `admin@tessera.com` / `Admin123!` per tenant (`Users`, Admin role) | ❌ | ✅ | Raw SQL in `Program.cs` (Postgres only — see gotcha #4) |
+| Tenant `Superadmin` system role (all actions, `IsSystem`) | ✅ (lazily on first invite) | ✅ | `TenantRoleSeeder.EnsureSuperadmin` + raw SQL / migration backfill |
 
-Config lives in `appsettings.json`: `SeedAdmin`, `SeedSuperAdmin`, `Jwt`
-(SecretKey/Issuer/Audience/expiries). The Docker environment overrides the
-connection string via `appsettings.Docker.json` and `ConnectionStrings__DefaultConnection`.
+Config lives in `appsettings.json` (`SeedAdmin`, `SeedSuperAdmin`, `Jwt`
+issuer/audience/expiries, `Cors:AllowedOrigins`, `RateLimiting:*`, `Database:AutoMigrate`)
+plus `appsettings.Development.json` (dev `Jwt:SecretKey`). Production sets
+`Jwt__SecretKey` (startup fails fast if unset — C5) and overrides the
+connection string via `ConnectionStrings__DefaultConnection`; the Docker
+environment does the latter through `appsettings.Docker.json`.
 
 ---
 
@@ -521,9 +586,10 @@ Every error response has this shape (from `ApiErrorResponse`):
 | Layer | Mechanism | Enforced where |
 |---|---|---|
 | 🆔 **Tenant resolution** | `X-Tenant-Id` header → `DbTenantStore` → Finbuckle context | `UseMultiTenant()` |
-| 🗄️ **Data isolation** | `IsMultiTenant()` on `User`/`Widget`/`RefreshToken` → global query filters (`WHERE TenantId = …`) | DB queries; also `EnforceMultiTenant` on save |
+| 🗄️ **Data isolation** | `IsMultiTenant()` on `User`/`Widget`/`RefreshToken`/`TenantRole`/`Invitation` → global query filters (`WHERE TenantId = …`) | DB queries; also `EnforceMultiTenant` on save |
 | 🔐 **Token isolation** | JWT `tenant_identifier` claim must equal header | `TenantClaimValidationMiddleware` |
-| 👑 **Permission isolation** | `Role` claim → `AdminOnly` / `SuperAdminOnly` policies | `UseAuthorization()` |
+| 👑 **Permission isolation** | Actions resolved from the user's `TenantRole` at request time (plus the `SuperAdminOnly` policy for `/admin/*`) | `ActionChecks` in handlers · `UseAuthorization()` |
+| ⏱️ **Session freshness** | JWT `token_version` must equal the user's current `TokenVersion` | `TokenVersionValidationMiddleware` |
 
 Endpoints always use `FirstOrDefaultAsync`/`ToListAsync` (never `FindAsync`,
 which bypasses query filters). The tenant admin seed uses `IgnoreQueryFilters()`
@@ -535,12 +601,16 @@ deliberately at startup.
 
 | Item | Status |
 |---|---|
-| **Actions not enforced** | `ActionCatalog` entries on roles are **display-only**. Enforcement is on the backlog (Session 10 decision). |
-| `NU1903` — `Microsoft.OpenApi` 2.0.0 vuln | Low severity, transitive; resolves with SDK/package update. |
-| Tests | No automated test project yet (only manual curl smoke tests documented in `Guide.md` / `progress.md`). |
+| **Audit trail** | No record of who changed which envelope/tenant/role when (D4) — P2. |
+| **Envelope versioning** | Template history for platform-level audit (A6) — P2. |
+| **Subdomain tenant resolution** | Only the `X-Tenant-Id` header strategy exists (B5) — P2. |
+| **Superadmin MFA** | Tenant MFA is done; platform accounts still use password only (C6). |
+| **Backups / PITR** | Postgres runs on a Docker volume with no backup story (E6). |
+| **Observability sink** | Correlation IDs exist; no metrics/tracing sink wired (E5) — Phase 4. |
+| **CI/CD** | No pipeline yet (E2) — Phase 7. |
+| **Billing** | No plans/entitlements; suspension-on-failed-payment can reuse B3 (F1). |
+| `NU1903` — `Microsoft.OpenApi` 2.0.0 vuln | Transitive; resolves with SDK/package update. |
 | Tenant picker | Populated from public `GET /tenants` — reveals tenant names to anyone (acceptable at this stage). |
-| Observability | Correlation IDs across all components, metrics, structured logging conventions — Phase 4, not started. |
-| Refresh tokens | Single-use rotation; no revocation endpoint; no logout server-side. Superadmins have no refresh at all (12 h token). |
 
 ---
 
@@ -551,13 +621,15 @@ Read these before changing anything. Each one caused a real bug or confusion.
 1. **`tenant_id` ≠ `tenant_identifier`.** Internal id (`alpha`) vs external identifier (`alpha-corp`). `TenantClaimValidationMiddleware` compares the **identifier** claim against the header. Users store the **id** in `User.TenantId`.
 2. **Widgets are demo data**, not a product feature. They exist to prove Finbuckle's tenant isolation. Don't model product requirements on them.
 3. **`FindAsync` bypasses query filters** — always use `FirstOrDefaultAsync` on tenant-scoped queries.
-4. **`EnforceMultiTenant` needs a tenant context.** Saving `IsMultiTenant` entities (User/Widget/RefreshToken) with no tenant context throws — that's why the tenant-admin seed uses raw SQL (Postgres) and why there's no seeded tenant admin on InMemory.
-5. **InMemory provider limitations**: no raw SQL (`ExecuteSqlRawAsync`), no `ExecuteDelete/ExecuteUpdate`. Tenant deletion therefore branches: raw SQL on Postgres, `MultiTenantDbContext.Create` bound-context on InMemory.
+4. **`EnforceMultiTenant` needs a tenant context.** Saving `IsMultiTenant` entities (User/Widget/RefreshToken/TenantRole/Invitation) with no tenant context throws — that's why the tenant-admin/role seeds use raw SQL (Postgres) and why there's no seeded tenant admin on InMemory. Superadmin actions that must touch tenant data (envelope copy, tenant delete) use `MultiTenantDbContext.Create` bound to the target tenant.
+5. **InMemory provider limitations**: no raw SQL (`ExecuteSqlRawAsync`), no `ExecuteDelete/ExecuteUpdate`, no database indexes/constraints. Tenant deletion therefore branches: raw SQL on Postgres, `MultiTenantDbContext.Create` bound-context on InMemory.
 6. **`admin@tessera.com` ≠ `superadmin@tessera.com`.** Different tables (`Users` vs `AdminUsers`). The tenant admin only exists on Postgres.
 7. **Ports**: `5000` = Docker API · `5085` = local `dotnet run` · `3000` = business portal · `3001` = platform portal. Both `.env.local` files currently point to `:5000`.
-8. **Middleware order is load-bearing** (see §5.3): exception → logging → CORS → tenant validation → multi-tenant → authN → tenant-claim check → authZ. CORS must run before tenant validation so preflights pass.
-9. **CORS allowlist** is exactly `localhost:3000` and `localhost:3001` — a new frontend port requires updating `Program.cs`.
-10. **Actions are a catalog, not enforcement.** A role's actions are display-only — no endpoint checks them yet.
+8. **Middleware order is load-bearing** (see §5.3): exception → logging → CORS → rate limiter → tenant validation → multi-tenant → suspension → authN → tenant-claim check → token-version check → authZ. CORS must run before tenant validation so preflights pass; `TokenVersionValidationMiddleware` must run after `UseAuthentication()`.
+9. **CORS origins are config-driven** (`Cors:AllowedOrigins`) with `localhost:3000/:3001` defaults — a new frontend port only needs config, not a `Program.cs` change.
+10. **Actions are enforced** (`ActionChecks`) for widgets, users, roles, invites, and promote — no endpoint trusts the role claim alone.
+11. **`token_version` stale-token rejection is real.** Password changes, MFA changes, role changes, and deletion bump the version; old JWTs 401 on the next request. Auth/recovery endpoints are exempt so re-login always works.
+12. **Test factories need isolated InMemory stores.** `WebApplicationFactory` merges config after `Program`'s top-level code, so provider choice, JWT options, and rate limits must read config lazily (or via `IConfigureOptions`); the InMemory store is keyed by `Database:InMemoryName`, which each test factory sets uniquely.
 11. **The `Tenant` entity doubles as the Finbuckle `ITenantInfo`** and a DB row. Its `ConnectionString` property is currently unused (single shared DB).
 12. **`.env.local` files are gitignored** — if you move machines, recreate them (see `README.md` / `Guide.md`).
 
@@ -572,8 +644,8 @@ Read these before changing anything. Each one caused a real bug or confusion.
 - **Logging**: Serilog, console sink.
 - **Exceptions**: global middleware (not `IExceptionHandler`).
 - **Monorepo**: all apps + platform in one repo.
-- **Tenant bootstrap**: first registered user of a workspace becomes its Admin.
-- **Actions**: kept on the backlog (Session 10 decision).
+- **Tenant onboarding**: invite-only. The first invitation redeemed in a workspace becomes its platform-managed Superadmin; the Superadmin creates Admins, who invite members.
+- **Actions**: enforced server-side via `ActionChecks`; the envelope is a template copied into tenant-owned roles (no cascade).
 
 ---
 

@@ -29,4 +29,8 @@
     <ProjectReference Include="..\Tessera.Platform.Observability\Tessera.Platform.Observability.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Tessera.Platform.Tests" />
+  </ItemGroup>
+
 </Project>

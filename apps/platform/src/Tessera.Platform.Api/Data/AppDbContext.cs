@@ -20,6 +20,8 @@ public class AppDbContext : MultiTenantDbContext
     public DbSet<Widget> Widgets => Set<Widget>();
     public DbSet<User> Users => Set<User>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<TenantRole> TenantRoles => Set<TenantRole>();
+    public DbSet<Invitation> Invitations => Set<Invitation>();
 
     // Platform-level entities (NOT multi-tenant): tenants, envelopes,
     // envelope roles, and superadmin accounts are owned by the platform.
@@ -50,6 +52,19 @@ public class AppDbContext : MultiTenantDbContext
             entity.Property(t => t.Name)
                 .IsRequired()
                 .HasMaxLength(200);
+
+            entity.Property(t => t.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            // Optimistic concurrency via PostgreSQL's xmin system column
+            // (uint + OnAddOrUpdate + IsConcurrencyToken → Npgsql maps it to
+            // xmin, which updates on every write and creates no column).
+            entity.Property(t => t.RowVersion)
+                .HasColumnName("xmin")
+                .HasColumnType("xmin")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
         });
 
         modelBuilder.Entity<Envelope>(entity =>
@@ -99,6 +114,47 @@ public class AppDbContext : MultiTenantDbContext
                 .IsRequired();
         });
 
+        // Tenant-owned roles: copied from the assigned envelope template,
+        // then owned by the tenant (renames/edits never cascade back).
+        modelBuilder.Entity<TenantRole>(entity =>
+        {
+            entity.HasKey(r => r.Id);
+
+            entity.Property(r => r.Name)
+                .IsRequired()
+                .HasMaxLength(100);
+
+            entity.HasIndex(r => new { r.TenantId, r.Name })
+                .IsUnique();
+
+            entity.Property(r => r.RowVersion)
+                .HasColumnName("xmin")
+                .HasColumnType("xmin")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
+
+            entity.IsMultiTenant();
+        });
+
+        // Invitations: tenant-scoped, redeemed at registration.
+        modelBuilder.Entity<Invitation>(entity =>
+        {
+            entity.HasKey(i => i.Id);
+
+            entity.Property(i => i.Email)
+                .IsRequired()
+                .HasMaxLength(256);
+
+            entity.Property(i => i.TokenHash)
+                .IsRequired()
+                .HasMaxLength(64);
+
+            entity.HasIndex(i => i.Email);
+            entity.HasIndex(i => i.TokenHash);
+
+            entity.IsMultiTenant();
+        });
+
         // ============================================================
         // Tenant-Scoped Entities
         // ============================================================
@@ -125,10 +181,22 @@ public class AppDbContext : MultiTenantDbContext
                 .IsRequired()
                 .HasMaxLength(256);
 
+            // Non-unique lookup index; uniqueness is enforced by the filtered
+            // unique index (Email, TenantId) WHERE NOT "IsDeleted" created in
+            // the migration (soft-deleted accounts must not block re-use of
+            // their email, and the app-level AnyAsync check is a second layer).
             entity.HasIndex(u => u.Email);
+
+            entity.HasIndex(u => u.RoleId);
 
             entity.Property(u => u.PasswordHash)
                 .IsRequired();
+
+            entity.Property(u => u.RowVersion)
+                .HasColumnName("xmin")
+                .HasColumnType("xmin")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
 
             entity.IsMultiTenant();
         });
@@ -142,6 +210,7 @@ public class AppDbContext : MultiTenantDbContext
                 .HasMaxLength(512);
 
             entity.HasIndex(r => r.UserId);
+            entity.HasIndex(r => r.FamilyId);
 
             entity.IsMultiTenant();
         });
