@@ -131,7 +131,7 @@ public static class TenantRoleSeeder
     /// <summary>
     /// Adds the platform-managed <c>Superadmin</c> role (all actions,
     /// <see cref="TenantRole.IsSystem"/>) when the tenant does not have one.
-    /// The first invitation redeemed in a workspace is granted this role.
+    /// The platform bootstrap invitation grants this role.
     /// </summary>
     public static void EnsureSuperadmin(AppDbContext db)
     {

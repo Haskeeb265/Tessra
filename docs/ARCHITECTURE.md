@@ -86,7 +86,7 @@ These are the concepts that have caused confusion before. Get them right.
 | **AdminUser** | A **platform-level superadmin** (`AdminUsers` table): no tenant binding, bcrypt hash. Auth via `/admin/auth/login`. `admin@…` (tenant) vs `superadmin@…` (platform) are **different tables and accounts**. |
 | **Roles constants** | Built-ins in `User.cs`: `Admin`, `User`, `SuperAdmin`. Only `SuperAdmin` is used as a claim-based policy (`SuperAdminOnly`); tenant authorization is **action-based**, not name-based. |
 | **Envelope roles** | Roles defined per-envelope (e.g. `Manager`, `Editor`). Copied into a tenant's `TenantRoles` at assignment (or the built-ins `Admin`/`User` when no envelope is assigned); the tenant owns the copies. |
-| **Tenant hierarchy** | Three tiers: **Superadmin** (platform-managed role — all actions, not renameable/editable/deletable, granted to the first invite redeemed in a workspace), **Admin** (tenant-created assistants, `manage_users`), and **User**/custom roles. Onboarding is **invite-only** — open self-registration was removed. |
+| **Tenant hierarchy** | Three tiers: **Superadmin** (platform-managed role — all actions, not renameable/editable/deletable, granted through the single platform bootstrap invite), **Admin** (tenant-created assistants, `manage_users`), and **User**/custom roles. Onboarding is **invite-only** — open self-registration was removed. |
 | **Tenant admin** | A `User` whose role includes the `manage_users` action. Can manage roles, users, and invitations via `/tenant/*`. |
 | **Superadmin** | An `AdminUser`. Can manage tenants + envelopes via `/admin/*`. |
 
@@ -407,7 +407,7 @@ Errors use `ApiErrorResponse` (see §11).
 | GET | `/ready` | no | public | Readiness: checks DB (`CanConnectAsync`), 503 when unreachable |
 | GET | `/tenants` | no | public | `[{ id: identifier, name }]` for the workspace picker (non-deleted only) |
 | GET | `/openapi` | no | public | OpenAPI JSON (dev only) |
-| POST | `/auth/register` | **yes** | public | Redeem an invitation (invite-only): validates the emailed token (email match, unused, unexpired) and creates the user with the invite's role — the first redemption in a workspace becomes its Superadmin. Rate-limited |
+| POST | `/auth/register` | **yes** | public | Redeem an invitation (invite-only): validates the emailed token (email match, unused, unexpired) and creates the user with the invite's role. The platform bootstrap invite grants Superadmin. Rate-limited |
 | POST | `/auth/login` | **yes** | public | Verify credentials → token pair, or `{ mfaRequired, mfaToken }` when MFA is enabled. Generic errors (C3). Rate-limited |
 | POST | `/auth/mfa` | **yes** | public | Complete MFA login with TOTP `code` → token pair. Rate-limited |
 | POST | `/auth/refresh` | **yes** | public | Rotate refresh token → new pair; replay of a used token revokes the family (C1). Rate-limited |
@@ -436,7 +436,7 @@ Errors use `ApiErrorResponse` (see §11).
 | DELETE | `/tenant/users/{id:guid}` | yes | `manage_users` | Remove a user (cannot remove yourself; soft delete) |
 | POST | `/admin/auth/login` | no | public | Superadmin login → `SuperAdmin` JWT (4 h) |
 | GET/POST | `/admin/tenants` | no | `SuperAdminOnly` | List / create tenants (envelope assignment copies template roles into `TenantRoles`) |
-| POST | `/admin/tenants/{id}/invites` | no | `SuperAdminOnly` | Invite by email; the first redemption in a workspace becomes its Superadmin, later platform invites default to Admin |
+| POST | `/admin/tenants/{id}/invites` | no | `SuperAdminOnly` | Send the single workspace Superadmin bootstrap invite; rejected once a live or pending owner exists |
 | PUT/DELETE | `/admin/tenants/{id}` | no | `SuperAdminOnly` | Update / delete tenant (delete hard-deletes widgets/tokens/invites, soft-deletes users + tenant) |
 | PUT | `/admin/tenants/{id}/status` | no | `SuperAdminOnly` | Suspend / reactivate a tenant (`Active` / `Suspended`) |
 | GET/POST | `/admin/envelopes` | no | `SuperAdminOnly` | List / create envelope templates (roles + actions) |
@@ -612,6 +612,15 @@ deliberately at startup.
 | `NU1903` — `Microsoft.OpenApi` 2.0.0 vuln | Transitive; resolves with SDK/package update. |
 | Tenant picker | Populated from public `GET /tenants` — reveals tenant names to anyone (acceptable at this stage). |
 
+### Dry-run findings (2026-08-18 — full list with file/line detail in `CODE_DRY_RUN.md` §20)
+
+| # | Finding | Where it lives |
+|---|---|---|
+| F15 | `Guide.md`'s curl quick-test registers **without an invite** (400s against the invite-only flow) and still says "first user becomes Admin"; its register-page "prefills email" claim is also wrong | `apps/platform/Guide.md` |
+| F16 | `docs/mcp.md` §6 + `readme.md` reference a `Tessera.Platform.RateLimiting` project / "RateLimiting module" that **doesn't exist** — the solution has only Api/Domain/Observability/Tests; rate limiting is inline in `Program.cs` | `docs/mcp.md`, `readme.md` |
+| F17 | This file drifts from code: §5.3 lists `/ready` as exempt from `TenantValidationMiddleware` (code doesn't exempt it → 400 without a header) and §6.1/§6.3 say the admin token lasts 12 h (effective: **4 h**, `Jwt:AdminAccessTokenExpirationHours`) | `docs/ARCHITECTURE.md` §5.3, §6.1, §6.3 |
+| F18 | Cosmetic: platform portal's `Alert` lacks a `success` kind; `HealthBadge` sends a stray default `X-Tenant-Id` to `/health` (harmless); register page state flash | `apps/web`, `apps/platform-portal` |
+
 ---
 
 ## 14. Gotchas — the blunder list
@@ -644,7 +653,7 @@ Read these before changing anything. Each one caused a real bug or confusion.
 - **Logging**: Serilog, console sink.
 - **Exceptions**: global middleware (not `IExceptionHandler`).
 - **Monorepo**: all apps + platform in one repo.
-- **Tenant onboarding**: invite-only. The first invitation redeemed in a workspace becomes its platform-managed Superadmin; the Superadmin creates Admins, who invite members.
+- **Tenant onboarding**: invite-only. The platform sends one workspace-owner bootstrap invite; that invite redeems into the platform-managed Superadmin role. The Superadmin creates Admins, who invite members.
 - **Actions**: enforced server-side via `ActionChecks`; the envelope is a template copied into tenant-owned roles (no cascade).
 
 ---

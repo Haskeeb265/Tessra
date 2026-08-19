@@ -1,6 +1,6 @@
 # Tessera MCP Template — Source of Truth
 
-> **Status:** working design doc — the authoritative record of what we've decided, what's still open, and what's deferred. Update it whenever a decision lands. Last updated 2026-08-17 (pre-implementation lock-down).
+> **Status:** working design doc — the authoritative record of what we've decided, what's still open, and what's deferred. Update it whenever a decision lands. Last updated 2026-08-18.
 >
 > Related: [`ARCHITECTURE.md`](ARCHITECTURE.md) (platform), [`multitenant_mature.md`](multitenant_mature.md) (prod-readiness gaps).
 
@@ -67,7 +67,9 @@ All tiers converge on the same manifest format; the server never knows which tie
 | **2. Wizard / OpenAPI import** | Fills a form (name, URL, params, auth) **or** uploads an OpenAPI spec → auto-generated draft manifest | Low code | Has a backend (maybe a web vendor does it) |
 | **3. Custom function (SDK)** | Writes a small Python `@tessera.tool` function, deployed as tenant-scoped executor | Code, opt-in | Has a developer; multi-step logic an HTTP call can't express |
 
-**Sequencing (locked):** wizard + manual manifest editing **first** (it's a CRUD app) → pre-built connectors **second** (only after the wedge vertical is chosen) → OpenAPI import + SDK **later**.
+**Sequencing (locked):** wizard + manual manifest editing **first** (it's a CRUD app) → pre-built connectors **second** (demand-driven, per vertical) → OpenAPI import + SDK **later**.
+
+**Wedge vertical (decided):** there is **no single wedge vertical**. The generic tool-manifest schema *is* the vertical-agnostic contract; each vertical (dental, salons, legal, …) is just a **vertical-specific manifest** built on that schema. Verticals are data, not decisions — a new vertical never requires code, only a new manifest. Connectors are therefore demand-driven, not gated on a chosen wedge.
 
 ### 2.3 Stack & the Python ↔ C# boundary
 - **C# = system of record.** All business logic, data, authz, manifests, credentials, usage accounting live here.
@@ -85,7 +87,7 @@ All tiers converge on the same manifest format; the server never knows which tie
 
 ### 2.6 OAuth: OpenIddict first
 - Use **OpenIddict** (open-source .NET AS library) inside the C# host. Free, C#, composes with the existing Users table and JWT signing.
-- Fallback: if the redirect/consent/security surface eats more than ~2 weeks, buy **WorkOS / Auth0 / Clerk** (hosted AS) fronting our token issuance.
+- **Decided (2026-08-18): build it ourselves.** OpenIddict it is — no hosted-AS fallback. The ~2-week spike remains, but as *scope validation* (confirm the redirect/consent/security surface is tractable), not a build-vs-buy fork.
 - Login/consent **pages live in the Next.js app** either way (per-tenant branding, unified with the admin dashboard).
 - The existing first-party auth stays as-is; OpenIddict composes with it (see §3.6 "why the current auth isn't enough").
 
@@ -109,7 +111,7 @@ Via the **manifest + tiers** (§2.2), never by writing MCP server code. Difficul
 ### 3.3 Same login as the SMB account, or a separate one?
 **Same identity, via delegation.** Jane authenticates against the SMB's own system; Tessera trusts the answer. Concretely:
 - **Federated SSO** (SMB system is the IdP, OAuth/SAML): Jane logs in with her existing Acme credentials via redirect; we receive "Jane = patient #4821" and link it to a local record.
-- **v1 fallback — Tessera-hosted mirror:** a lightweight account on our platform *tied to* her Acme record (verified by email match or an admin-created link). Same identity, different login. Simpler to build first.
+- **v1 — Tessera-hosted mirror (decided):** a lightweight account on our platform *tied to* her Acme record. The link is **admin-created**: Acme's admin adds Jane as a user in the Acme workspace — that's how Acme hands us her identity (provisioning); an email match can auto-verify/link when available. Same identity, different login. Federation (Acme's own IdP) is the later upgrade, designed as an interface now.
 
 The token ChatGPT ends up holding is **scoped + tenant-bound + expiring** — it carries *which client, which user, which tenant*, and is short-lived (refresh for renewal). It is not a permanent grant for "all of Jane's activities."
 
@@ -131,11 +133,11 @@ The existing `RateLimiting` module covers it; MCP calls get per-tenant, per-user
 
 | # | Question | Why it matters | Default / next step |
 |---|---|---|---|
-| Q1 | **Which wedge vertical first?** (dental, salons, legal, …) | Decides which Tier-1 connectors to build and the first real manifests | **Pick one before building connectors**; wizard works for any vertical |
-| Q2 | **Customer-identity model details** — hosted mirror vs federation; how an identity maps to SMB records (email match? admin mapping? pass-through user ID?) | The product moat; without it tool calls are anonymous | Design in §3.3 direction; pick mirror for v1, keep federation as an interface |
+| Q1 | **Which wedge vertical first?** (dental, salons, legal, …) | Decided which Tier-1 connectors to build and the first real manifests | **✅ Answered — no single wedge.** One generic tool-manifest schema; each vertical is a vertical-specific manifest built on it. Connectors are demand-driven (see §2.2) |
+| Q2 | **Customer-identity model details** — hosted mirror vs federation; how an identity maps to SMB records | The product moat; without it tool calls are anonymous | **✅ Answered.** Mirror for v1 with an **admin-created link**: Acme's admin adds Jane as a user in the Acme workspace (Acme provides identity by provisioning); optional email-match auto-verification. Federation stays as a later interface (§3.3) |
 | Q3 | **Per-user visibility rules** — what can a user see/do (Jane only her appointments; front desk everything) | Maps onto our role/action system; needed for real SMBs | Reuse `ActionChecks`; design per-SMB mapping during v1 |
-| Q4 | **OpenIddict spike outcome** | Build-vs-buy decision point | Time-box ~2 weeks; then commit or switch to WorkOS |
-| Q5 | **Which Python MCP SDK** (official SDK vs FastMCP) | Gateway ergonomics; stateless-core support per 2026-07-28 spec | Evaluate when starting the gateway |
+| Q4 | **OpenIddict spike outcome** | Build-vs-buy decision point | **✅ Answered — build it ourselves.** Commit to OpenIddict; no hosted-AS fallback. The ~2-week spike stays as scope validation (§2.6) |
+| Q5 | **Which Python MCP SDK** (official SDK vs FastMCP) | Gateway ergonomics; stateless-core support per 2026-07-28 spec | **✅ Answered — official MCP SDK.** Closest to the 2026-07-28 spec (stateless core); re-verify spec support when starting the gateway |
 | Q6 | **Client registration practicalities** — how ChatGPT/Claude register (CIMD vs DCR); pre-register our endpoint | Needed for the popup flow to work end-to-end in real assistants | Verify against the 2026-07-28 spec when implementing |
 | Q7 | **Consent/scope granularity for v1** | UX + security balance | Default: one coarse scope per tenant |
 | Q8 | **Usage metering design** (per-user/per-tool events → billing) | Feeds F1 billing later; the gateway must emit events now | Emit usage events from the gateway to C# from day one; billing later |
@@ -146,7 +148,7 @@ The existing `RateLimiting` module covers it; MCP calls get per-tenant, per-user
 
 | Item | Defer until | Trigger / notes |
 |---|---|---|
-| Tier-1 pre-built connectors | Q1 answered (wedge chosen) | Build per vertical need; don't build generic connectors blind |
+| Tier-1 pre-built connectors | Demand (a customer asks, or a vertical shows traction) | Each vertical is a manifest on the generic schema; don't build generic connectors blind |
 | OpenAPI import path | After wizard ships | Nice-to-have for SMBs with documented APIs |
 | Tier-3 custom SDK (`@tessera.tool`) | After real demand | Escape hatch for complex logic; opt-in |
 | Subdomain addressing / white-labeling | A customer asks for it | Path-based works until then |
@@ -223,11 +225,11 @@ tessera/
 | 9 | Credential storage | ✅ Answered (v1) / deferred (hardening) | Encrypted columns now; KMS later (§2.7) |
 | 10 | Scopes granularity | ✅ Answered (default) | Coarse for v1 (§2.8) |
 | 11 | Rate limiting / abuse | ✅ Answered | Existing module + per-tenant limits (§3.7) |
-| 12 | Build vs buy the OAuth AS | ⏳ **Open** (spike) | Default OpenIddict; switch to WorkOS if spike runs long (Q4) |
-| 13 | Which wedge vertical first | ⏳ **Open** | Decides connectors (Q1) |
-| 14 | Customer-identity model (who Jane is to Acme) | ⏳ **Open** | Mirror v1; federation interface (Q2) |
+| 12 | Build vs buy the OAuth AS | ✅ Answered | Build with OpenIddict — no buy fallback (§2.6, Q4) |
+| 13 | Which wedge vertical first | ✅ Answered | No single wedge — generic schema, vertical manifests as data (§2.2, Q1) |
+| 14 | Customer-identity model (who Jane is to Acme) | ✅ Answered | Mirror v1 via admin-created link; email-match optional; federation later (§3.3, Q2) |
 | 15 | Per-user visibility rules | ⏳ **Open** | Reuse ActionChecks (Q3) |
-| 16 | Python MCP SDK choice | ⏳ **Open** | Official vs FastMCP (Q5) |
+| 16 | Python MCP SDK choice | ✅ Answered | Official MCP SDK (Q5) |
 | 17 | Client registration practicalities | ⏳ **Open** | Verify against spec when building (Q6) |
 | 18 | Usage metering → billing | ⏳ Deferred | Emit events from day one; billing later (Q8, §5) |
 | 19 | Audit trail (D4) / envelope versioning (A6) | ⏳ Deferred | P2 (§5) |

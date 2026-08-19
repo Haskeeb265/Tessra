@@ -462,10 +462,15 @@ public static class AdminEndpoints
                         },
                         http.RequestServices);
 
+                await using var transaction =
+                    await TenantConcurrency.BeginTenantTransactionAsync(
+                        bound,
+                        tenant.Id);
+
                 // Ensure roles exist, then pick the invite role: the
-                // platform-managed Superadmin when the workspace has none,
-                // otherwise the built-in Admin (tenant admins invite the
-                // rest of the team through /tenant/invites).
+                // platform-managed Superadmin only while the workspace has no
+                // owner and no outstanding owner invite. Tenant admins invite
+                // the rest of the team through /tenant/invites.
                 await TenantRoleSeeder.EnsureTenantRolesAsync(
                     bound,
                     tenant.EnvelopeId);
@@ -477,12 +482,38 @@ public static class AdminEndpoints
                     await bound.Users.AnyAsync(
                         u => u.RoleId == superadminRole.Id && !u.IsDeleted);
 
-                Guid? roleId = hasSuperadmin
-                    ? (await bound.TenantRoles
-                        .FirstOrDefaultAsync(
-                            r => r.Name.ToLower() == Roles.Admin.ToLower()))
-                        ?.Id
-                    : superadminRole?.Id;
+                if (hasSuperadmin)
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "This workspace already has a Superadmin. " +
+                                "Invite additional users from the workspace " +
+                                "team page."
+                        });
+                }
+
+                var now = DateTime.UtcNow;
+
+                var hasPendingOwnerInvite = superadminRole is not null &&
+                    await bound.Invitations.AnyAsync(
+                        i => i.RoleId == superadminRole.Id &&
+                             i.UsedAt == null &&
+                             i.ExpiresAt >= now);
+
+                if (hasPendingOwnerInvite)
+                {
+                    return Results.BadRequest(
+                        new
+                        {
+                            error =
+                                "This workspace already has a pending " +
+                                "Superadmin invitation."
+                        });
+                }
+
+                Guid? roleId = superadminRole?.Id;
 
                 if (roleId is null)
                 {
@@ -508,7 +539,7 @@ public static class AdminEndpoints
                             Email = email,
                             RoleId = roleId.Value,
                             TokenHash = AuthHelpers.Sha256Hex(token),
-                            ExpiresAt = DateTime.UtcNow.AddHours(72)
+                            ExpiresAt = now.AddHours(72)
                         });
 
                     await bound.SaveChangesAsync();
@@ -526,6 +557,11 @@ public static class AdminEndpoints
                         "You're invited to join a Tessera workspace",
                         $"<p>Click <a href=\"{link}\">here</a> to accept " +
                         "your invitation. It expires in 3 days.</p>");
+                }
+
+                if (transaction is not null)
+                {
+                    await transaction.CommitAsync();
                 }
 
                 return Results.Ok(

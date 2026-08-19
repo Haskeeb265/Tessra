@@ -37,7 +37,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     // ================================================================
 
     [Fact]
-    public async Task First_invite_becomes_superadmin_second_is_a_member()
+    public async Task Platform_invite_bootstraps_only_one_superadmin()
     {
         // Use a brand-new workspace: alpha-corp is shared by other tests in
         // this class, so its first redemption is not guaranteed to be this one.
@@ -46,13 +46,40 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
         var superadmin = await LoginSuperAdminAsync(_client);
         await CreateTenantAsync(_client, superadmin, tenant, tenant);
 
-        // First redemption in the workspace → platform-managed Superadmin.
-        var adminToken = await RegisterUserAsync(
-            _factory, _client, tenant, "a1-admin@test.com", "Password123!");
+        var firstInvite = await Auth(_client, superadmin).PostAsJsonAsync(
+            $"/admin/tenants/{tenant}/invites",
+            new { email = "a1-admin@test.com" });
+        Assert.Equal(HttpStatusCode.OK, firstInvite.StatusCode);
 
-        // A second platform invite defaults to Admin (not a second Superadmin).
-        var adminToken2 = await RegisterUserAsync(
-            _factory, _client, tenant, "a1-admin2@test.com", "Password123!");
+        // No second owner invite while the first is still pending.
+        var pendingBlocked = await Auth(_client, superadmin).PostAsJsonAsync(
+            $"/admin/tenants/{tenant}/invites",
+            new { email = "a1-admin2@test.com" });
+        Assert.Equal(HttpStatusCode.BadRequest, pendingBlocked.StatusCode);
+
+        var inviteToken = InviteTokenFromEmail(_factory, "a1-admin@test.com");
+        var register = await Tenant(_client, tenant).PostAsJsonAsync(
+            "/auth/register",
+            new
+            {
+                email = "a1-admin@test.com",
+                password = "Password123!",
+                inviteToken
+            });
+        Assert.Equal(HttpStatusCode.Created, register.StatusCode);
+        var adminPair = await register.Content.ReadFromJsonAsync<TokenPair>();
+        var adminToken = adminPair!.AccessToken;
+
+        // Once the owner exists, platform invites stop. The tenant owner must
+        // invite the rest of the team from the workspace team page.
+        var ownerExistsBlocked = await Auth(_client, superadmin).PostAsJsonAsync(
+            $"/admin/tenants/{tenant}/invites",
+            new { email = "a1-admin2@test.com" });
+        Assert.Equal(HttpStatusCode.BadRequest, ownerExistsBlocked.StatusCode);
+
+        var adminToken2 = await InviteAndRegisterAsync(
+            _factory, _client, adminToken, tenant,
+            "a1-admin2@test.com", "Password123!", "Admin");
 
         // The Superadmin invites a plain member with the User role.
         var userToken = await InviteAndRegisterAsync(
@@ -71,7 +98,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
         Assert.Contains("manage_users", adminMe?.Actions ?? []);
         Assert.Contains("delete_widget", adminMe?.Actions ?? []);
 
-        // Second platform invite → Admin tier (single-Superadmin rule).
+        // Tenant-side invite → Admin tier, never a second Superadmin.
         Assert.Equal("Admin", admin2Me?.Role);
         Assert.Contains("manage_users", admin2Me?.Actions ?? []);
         Assert.DoesNotContain("Superadmin", admin2Me?.Role);
@@ -84,7 +111,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Registration_without_invite_is_rejected_and_generic()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-no-invite");
 
         var response = await Tenant(_client, tenant).PostAsJsonAsync(
             "/auth/register",
@@ -119,7 +146,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Refresh_rotates_and_reuse_revokes_the_family()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-refresh");
 
         var login = await Tenant(_client, tenant).PostAsJsonAsync(
             "/auth/login",
@@ -159,7 +186,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Logout_revokes_refresh_tokens()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-logout");
 
         await RegisterUserAsync(
             _factory, _client, tenant, "a4@test.com", "Password123!");
@@ -188,7 +215,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Change_password_revokes_all_sessions()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-password");
 
         var token = await RegisterUserAsync(
             _factory, _client, tenant, "a5@test.com", "Password123!");
@@ -217,7 +244,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Password_reset_flow()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-reset");
 
         await RegisterUserAsync(
             _factory, _client, tenant, "a6@test.com", "Password123!");
@@ -255,18 +282,20 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
             }));
         var client = factory.CreateClient();
 
+        var tenant = "auth-verify";
+        var superToken = await LoginSuperAdminAsync(client);
+        await CreateTenantAsync(client, superToken, tenant, tenant);
+
         // Platform-invite the user, then redeem — verification is required,
         // so redeeming returns a message, not tokens.
-        var superToken = await LoginSuperAdminAsync(client);
-
         var invite = await Auth(client, superToken).PostAsJsonAsync(
-            $"/admin/tenants/{AlphaCorp}/invites",
+            $"/admin/tenants/{tenant}/invites",
             new { email = "a7@test.com" });
         invite.EnsureSuccessStatusCode();
 
         var inviteToken = InviteTokenFromEmail(factory, "a7@test.com");
 
-        var register = await Tenant(client, AlphaCorp).PostAsJsonAsync(
+        var register = await Tenant(client, tenant).PostAsJsonAsync(
             "/auth/register",
             new { email = "a7@test.com", password = "Password123!", inviteToken });
         Assert.Equal(HttpStatusCode.Created, register.StatusCode);
@@ -276,7 +305,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
         Assert.Contains("verification link", body?.Message);
 
         // Login is blocked until verified.
-        var blocked = await Tenant(client, AlphaCorp).PostAsJsonAsync(
+        var blocked = await Tenant(client, tenant).PostAsJsonAsync(
             "/auth/login",
             new { email = "a7@test.com", password = "Password123!" });
         Assert.Equal(HttpStatusCode.Unauthorized, blocked.StatusCode);
@@ -286,12 +315,12 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
             e => string.Equals(e.To, "a7@test.com", StringComparison.OrdinalIgnoreCase));
         var verifyToken = ExtractLink(verifyEmail.Body, "token");
 
-        var verify = await Tenant(client, AlphaCorp).PostAsJsonAsync(
+        var verify = await Tenant(client, tenant).PostAsJsonAsync(
             "/auth/verify-email",
             new { token = verifyToken });
         Assert.Equal(HttpStatusCode.OK, verify.StatusCode);
 
-        var login = await Tenant(client, AlphaCorp).PostAsJsonAsync(
+        var login = await Tenant(client, tenant).PostAsJsonAsync(
             "/auth/login",
             new { email = "a7@test.com", password = "Password123!" });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
@@ -304,7 +333,7 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
     [Fact]
     public async Task Mfa_enroll_and_login_flow()
     {
-        const string tenant = "alpha-corp";
+        var tenant = await CreateIsolatedTenantAsync("auth-mfa");
 
         var token = await RegisterUserAsync(
             _factory, _client, tenant, "a8@test.com", "Password123!");
@@ -341,6 +370,13 @@ public class AuthFlowTests : IClassFixture<TestAppFactory>
             "/auth/mfa",
             new { mfaToken = mfa!.MfaToken, code });
         Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+    }
+
+    private async Task<string> CreateIsolatedTenantAsync(string tenant)
+    {
+        var superToken = await LoginSuperAdminAsync(_client);
+        await CreateTenantAsync(_client, superToken, tenant, tenant);
+        return tenant;
     }
 
     private record ErrorBody(string? Error);

@@ -33,8 +33,7 @@ public class TenantRole
     /// A platform-managed role: the tenant's <c>Superadmin</c> tier. It
     /// always holds every action in <see cref="ActionCatalog"/>, cannot be
     /// renamed, edited, or deleted by the tenant, and can only be assigned
-    /// by the platform superadmin (first invitation redeemed in a workspace
-    /// grants it).
+    /// by the platform superadmin through the workspace bootstrap invite.
     /// </summary>
     public bool IsSystem { get; set; }
 

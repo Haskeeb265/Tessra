@@ -100,7 +100,7 @@ The **placeholder demo resource** — a "todo" equivalent used to prove tenant i
 
 ### `Users`
 
-Tenant-scoped users. Permissions come from the assigned tenant role via `RoleId` (action-based authz — renames never break it). Onboarding is invite-only: the first invite redeemed in a workspace becomes its platform-managed **Superadmin**; Admins and members join via invitations.
+Tenant-scoped users. Permissions come from the assigned tenant role via `RoleId` (action-based authz — renames never break it). Onboarding is invite-only: the platform sends one bootstrap invite for the workspace **Superadmin**; Admins and members join via tenant-side invitations.
 
 | Column | Type | Notes |
 |---|---|---|

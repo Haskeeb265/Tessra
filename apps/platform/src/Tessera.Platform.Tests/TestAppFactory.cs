@@ -136,8 +136,8 @@ public static class ApiTestHelpers
     /// <summary>
     /// Registers a user via a PLATFORM invitation: the platform superadmin
     /// invites <paramref name="email"/> into <paramref name="tenant"/> and
-    /// the invite is redeemed. The first redemption in a workspace becomes
-    /// its Superadmin; later platform invites default to Admin.
+    /// the invite is redeemed. This is only valid for bootstrapping the
+    /// workspace Superadmin; later users are invited tenant-side.
     /// </summary>
     public static async Task<string> RegisterUserAsync(
         TestAppFactory factory,

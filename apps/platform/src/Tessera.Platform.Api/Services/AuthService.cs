@@ -55,8 +55,9 @@ public class AuthService
         string? inviteToken = null)
     {
         var normalizedEmail = email.Trim().ToLowerInvariant();
+        var tenantIdentifier = GetCurrentTenantIdentifier();
 
-        if (string.IsNullOrEmpty(GetCurrentTenantIdentifier()))
+        if (string.IsNullOrEmpty(tenantIdentifier))
         {
             return AuthResult.Failure("A tenant is required.");
         }
@@ -67,12 +68,30 @@ public class AuthService
             return AuthResult.Failure("Registration failed.");
         }
 
+        var tenant = await _db.Tenants
+            .AsNoTracking()
+            .Where(t => t.Identifier == tenantIdentifier && !t.IsDeleted)
+            .Select(t => new { t.Id })
+            .FirstOrDefaultAsync();
+
+        if (tenant is null)
+        {
+            return AuthResult.Failure("A tenant is required.");
+        }
+
+        await using var transaction =
+            await TenantConcurrency.BeginTenantTransactionAsync(_db, tenant.Id);
+
+        var now = DateTime.UtcNow;
+        var tokenHash = AuthHelpers.Sha256Hex(inviteToken);
+
         var invite = await _db.Invitations
             .FirstOrDefaultAsync(i =>
-                i.TokenHash == AuthHelpers.Sha256Hex(inviteToken));
+                i.TokenHash == tokenHash &&
+                i.UsedAt == null &&
+                i.ExpiresAt >= now);
 
-        if (invite is null || invite.UsedAt is not null ||
-            invite.ExpiresAt < DateTime.UtcNow ||
+        if (invite is null ||
             !string.Equals(
                 invite.Email,
                 normalizedEmail,
@@ -131,7 +150,7 @@ public class AuthService
         };
 
         _db.Users.Add(invitedUser);
-        invite.UsedAt = DateTime.UtcNow;
+        invite.UsedAt = now;
 
         var requireVerification =
             _configuration.GetValue<bool>("Auth:RequireEmailVerification");
@@ -149,6 +168,10 @@ public class AuthService
                 DateTime.UtcNow.AddHours(24);
 
             await _db.SaveChangesAsync();
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync();
+            }
 
             await SendVerificationEmailAsync(invitedUser, verificationToken);
 
@@ -160,7 +183,14 @@ public class AuthService
         invitedUser.EmailVerified = true;
         await _db.SaveChangesAsync();
 
-        return await GenerateAuthResultAsync(invitedUser);
+        var result = await GenerateAuthResultAsync(invitedUser);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync();
+        }
+
+        return result;
     }
 
     // ============================================================
