@@ -130,14 +130,14 @@ flowchart LR
 4. **`EnforceMultiTenant` needs a tenant context.** Saving `IsMultiTenant` entities with no tenant context throws — that's why tenant-admin/role seeds use raw SQL (Postgres) and why there's no seeded tenant admin on InMemory. Superadmin actions that touch tenant data (envelope copy, tenant delete) use `MultiTenantDbContext.Create` bound to the target tenant.
 5. **InMemory limitations**: no raw SQL, no `ExecuteDelete/ExecuteUpdate`, no indexes/constraints. Tenant deletion branches: raw SQL on Postgres, bound-context `MultiTenantDbContext.Create` on InMemory.
 6. **`admin@tessera.com` ≠ `superadmin@tessera.com`**. Different tables (`Users` vs `AdminUsers`). The tenant admin only exists on Postgres.
-7. **Ports**: `5000` = Docker API · `5085` = local `dotnet run` · `3000` = business portal · `3001` = platform portal. Both `.env.local` files currently point to `:5000`.
+7. **Ports**: `5000` = Docker API · `5085` = local `dotnet run` · `3000` = business portal · `3001` = platform portal · `8000` = MCP gateway · `9100` = Acme Dental stub · `5432` = PostgreSQL · `80/443` = Caddy (the single public origin). Both `.env.local` files currently point to `:5000`.
 8. **Middleware order is load-bearing** (see §4.3).
 9. **CORS origins are config-driven** — a new frontend port only needs config, not a `Program.cs` change.
 10. **Actions are enforced** (`ActionChecks`) for widgets, users, roles, invites, and manifests — no endpoint trusts the role claim alone.
 11. **`token_version` stale-token rejection is real.** Password/MFA/role changes and deletion bump it; old JWTs 401. Auth/recovery endpoints are exempt.
 12. **Test factories need isolated stores.** `WebApplicationFactory` merges config after `Program`'s top-level code, so provider choice, JWT options, and rate limits must read config lazily. Each factory sets a unique `Database:InMemoryName`.
 13. **The `Tenant` entity doubles as the Finbuckle `ITenantInfo`** and a DB row. `ConnectionString` is currently unused (single shared DB).
-14. **OAuth dev browser client is `tessera-local-dev`**, pre-registered with loopback redirect `http://127.0.0.1:9876/callback`. Real assistant client registration (CIMD) is deferred to the gateway milestone.
+14. **OAuth dev browser client is `tessera-local-dev`**, pre-registered with loopback redirect `http://127.0.0.1:9876/callback`. Real assistant client registration is **CIMD** and is built (`ClientIdMetadataService`, §6.4).
 15. **Local OAuth requires TLS** — Caddy terminates at `https://tessera.local`; the API trusts Caddy's `X-Forwarded-*` so OpenIddict sees `https`. `DisableTransportSecurityRequirement()` is enabled outside Production.
 
 ## 5. Authentication & authorization
@@ -241,7 +241,7 @@ The platform now also acts as the **OAuth 2.1 authorization server** for MCP. Th
 - **Token endpoint** `POST /connect/token` — accepts `application/x-www-form-urlencoded` (form-urlencoded is required by the spec; JSON-only parsers would 415); handles authorization-code + PKCE and refresh-token grants; re-issues tokens with current user/tenant state.
 - **Interactive login** `POST /connect/login` (+ `/connect/login/mfa`) — JSON endpoints the portal drives; sets the interactive OAuth cookie.
 - **Consent** `GET /connect/consent-info` + `POST /connect/consent` (+ `?deny=1` on authorize → `access_denied`) — records user grants in `McpConsents`.
-- **Discovery** `/.well-known/openid-configuration` — RFC 8414 + OIDC; advertises `code_challenge_methods_supported: [S256]`, `scopes_supported: [tools, offline_access]`, issuer, endpoints, JWKS. RFC 9207 `iss` in responses.
+- **Discovery** `/.well-known/openid-configuration` — RFC 8414 + OIDC; advertises `code_challenge_methods_supported: [S256]`, `scopes_supported: [tools, offline_access]`, issuer, endpoints, JWKS. RFC 9207 `iss` in responses. Since 2026-09-12 the payload is also amended (via an OpenIddict `ApplyConfigurationResponseContext` handler) to advertise `client_id_metadata_document_supported: true` and `token_endpoint_auth_methods_supported` including `none` — without that pair, Claude web falls back to a non-CIMD client id and the AS rejects it as `invalid_client`.
 - **Pre-registered dev client** `tessera-local-dev` (public, loopback `http://127.0.0.1:9876/callback`) for the scripted PKCE test harness and MCP Inspector.
 
 ### 6.2 Tenant binding the OAuth way
@@ -250,7 +250,7 @@ On MCP, tenant identity moves from `X-Tenant-Id` to **the URL + token audience**
 
 - The canonical MCP URL `https://…/t/{slug}/mcp` is the RFC 8707 `resource` the client requests and the token's `aud`. Two tenants ⇒ two distinct audiences ⇒ tokens can't be replayed across tenants.
 - The AS maps `resource` → tenant slug at authorize/token time (see `McpOAuthService.TenantSlugFromResource`), then validates the authenticated user belongs to that tenant.
-- Access tokens are **signed RS256 JWTs** (JWS, `at+jwt`, kid `mcp-signing-v1`, published at `/.well-known/jwks`) — the AS side is **live** (`options.DisableAccessTokenEncryption()` in `Program.cs`), so the Python gateway needs only the public signing key, never the C# AES key. Refresh tokens are encrypted JWTs (server-side, single-use rotation). The Python gateway's JWKS `TokenVerifier` (signature + audience + expiry + issuer + scopes) is the remaining half, deferred to the gateway milestone.
+- Access tokens are **signed RS256 JWTs** (JWS, `at+jwt`, kid `mcp-signing-v1`, published at `/.well-known/jwks`) — the AS side is **live** (`options.DisableAccessTokenEncryption()` in `Program.cs`), so the Python gateway needs only the public signing key, never the C# AES key. Refresh tokens are encrypted JWTs (server-side, single-use rotation). The Python gateway's JWKS `TokenVerifier` (signature + audience + expiry + issuer + scopes) is **built and live-verified** (`apps/mcp-server/src/tessera_mcp/auth/token_verifier.py`).
 - Scopes: coarse per-tenant `tools` + `offline_access`. Per-tool `required_scopes` from manifests stay aspirational for now — they become enforceable once tokens start carrying them.
 - Single issuer for all tenants (default); `aud`/resource distinguishes them.
 
@@ -273,12 +273,15 @@ On MCP, tenant identity moves from `X-Tenant-Id` to **the URL + token audience**
 | `Program.cs` | OpenIddict registration (core + server, RS256 signing + AES encryption keys, PKCE required, refresh rotation `SetRefreshTokenReuseLeeway(0)`, `DisableResourceValidation` + ignore audience/resource permissions since tenant endpoints are dynamic), cookie scheme, forwarded-headers trust for Caddy, OAuth paths excluded from tenant middleware, migrations + seeding of dev client, `McpOAuth:KeyDirectory` mounted volume for persistent keys |
 | `Middleware/TenantValidationMiddleware.cs` + `TenantSuspensionMiddleware.cs` | `/connect` + `/.well-known` added to exclusion lists |
 | `Domain/Models/ToolManifest.cs` + `Data/AppDbContext.cs` | new tenant-scoped `ToolManifests` DbSet + filtered unique index on `(TenantId, ToolName) WHERE NOT IsDeleted` |
+| `McpOAuth/ClientIdMetadataService.cs` + `McpOAuth/CimdAuthorizationRequestHandler.cs` | CIMD client registration: fetch/cache the `client_id` metadata document, validate it (https, exact URL match, loopback redirect URIs), and run before OpenIddict's built-in client lookup — rejecting bad documents as `invalid_client`, never a 500 |
+| `McpOAuth/McpOAuthKeys.cs` | RS256 signing key (`kid mcp-signing-v1`) + AES encryption key, persisted under `McpOAuth:KeyDirectory` (ephemeral, `Lazy<>`-memoized otherwise) |
+| `Data/SampleSmbSeeder.cs` | seeds the Acme Dental tenant + its three tool manifests (idempotent) |
 
-### 6.5 What's intentionally deferred
+### 6.5 Built since the first drop, and what's still deferred
 
-- **CIMD client registration** (fetch + cache client-metadata documents, validate redirect URIs incl. port-agnostic loopback) — custom work OpenIddict doesn't ship; targeted for the gateway milestone.
-- **Consent UI polish, end-user (Jane) identity model**, per-tool scopes, credential vault resolution for `vault://` refs.
-- **Python gateway `TokenVerifier`** — the AS already issues signed RS256 JWTs + serves `/.well-known/jwks`; the gateway half that validates them is not built yet.
+- ✅ **CIMD client registration** — `ClientIdMetadataService` fetches + caches the client's metadata document, validates the `client_id` (https, path, exact-URL match) and loopback redirect URIs port-agnostically. OpenIddict 7.7 has no CIMD, so it is wired as a `ValidateAuthorizationRequest` handler ordered before the built-in client lookup, plus the discovery amendment described in §6.1.
+- **Still deferred:** consent-UI polish, the end-user (Jane) identity model, per-tool scopes, and credential-vault resolution for `vault://` refs (dev resolves them from an env map).
+- ✅ **Python gateway `TokenVerifier`** — JWKS fetch/cache with refresh-on-unknown-`kid`, RS256, `iss`, `aud` (= the calling tenant's resource URL) and `exp` validation; missing scope is enforced by the SDK middleware as 403 `insufficient_scope`.
 
 ### 6.6 Verified local flow (2026-09-07)
 
@@ -305,7 +308,7 @@ Gateway: 401 + WWW-Authenticate: resource_metadata=…PRM
 Claude Code --GET PRM--> Gateway /.well-known/oauth-protected-resource/…
 Claude Code --GET AS metadata (RFC 8414 + OIDC)--> C# /.well-known/…
 Claude Code --GET /connect/authorize?client_id=<CIMD URL>&resource=…t/acme-dental/mcp…--> C#
-  1. AS fetches client's CIMD doc → validates redirect URIs  (deferred)
+  1. AS fetches client's CIMD doc → validates redirect URIs  (built)
   2. Login (admin@tessera.com … against acme-dental's Users row; MFA if enabled) via portal
   3. Consent: "Allow <client> to connect to Acme Dental?" → code
 Claude Code --POST /connect/token (code + PKCE verifier, form-urlencoded)--> C#
@@ -327,10 +330,16 @@ Client --POST /t/acme-dental/mcp, Authorization: Bearer <token>--> Gateway
 
 OAuth requires HTTPS for real clients. Dev stack uses a **Caddy reverse proxy** in compose (`apps/platform/caddy/Caddyfile`) on `https://tessera.local`:
 
-- `/connect/*`, `/.well-known/*`, `/auth/*`, `/tenant/*`, `/admin/*`, `/tenants`, `/widgets`, `/health`, `/ready`, `/openapi/*` → platform API container (`platform-api:8080`)
+- `/connect/*`, `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks`, `/auth/*`, `/tenant/*`, `/admin/*`, `/tenants`, `/widgets`, `/health`, `/ready`, `/openapi/*` → platform API container (`api:8080`)
+- `/t/*` and `/.well-known/oauth-protected-resource/*` → the Python MCP gateway (`mcp-gateway:8000`) — it **must** share the origin with the AS, because the token audience is the MCP resource URL on that origin
 - everything else (`/`, `/oauth/*`, dashboard) → Next.js portal dev server on the host (`host.docker.internal:3000`)
 
 Caddy uses an internal CA. Dev scripts pass `--cacert` from the `caddy-data` volume; browsers accept the dev warning once. The API trusts `X-Forwarded-*` from Caddy so OpenIddict sees `https`. `DisableTransportSecurityRequirement()` is enabled outside Production for local dev/tests.
+
+Two rules make this work, and both cost real debugging time:
+
+- **Endpoint URIs must stay relative.** `SetAuthorizationEndpointUris`, `SetTokenEndpointUris` and `SetJsonWebKeySetEndpointUris` are matched against the *inbound* request, which behind Caddy is always `http://<host>/...`. Absolute `https://` URIs therefore never match, OpenIddict never parses the request, and the passthrough handler throws `InvalidOperationException: The OpenID Connect request cannot be retrieved`.
+- **The API must trust `X-Forwarded-Proto`.** TLS ends at the tunnel/edge, so the process only ever sees plain HTTP; `ForwardedHeadersOptions` + `app.UseForwardedHeaders()` (first middleware) plus Caddy's `header_up X-Forwarded-Proto https` (the `(tls_hop)` snippet) are what produce correct public URLs for `issuer`, the authorization/token endpoints and `jwks_uri`.
 
 ## 7. Data model — full reference
 
@@ -445,7 +454,7 @@ All tenant-scoped endpoints require `X-Tenant-Id`. All responses JSON. Errors us
 | PUT | `/tenant/manifests/{id:guid}` | yes | `manage_tools` | Update manifest (concurrency check via `RowVersion`/xmin) |
 | DELETE | `/tenant/manifests/{id:guid}` | yes | `manage_tools` | Soft-delete manifest (`IsDeleted = true`) |
 
-These are the **dashboard/management** endpoints, gated by `manage_tools`. The MCP gateway does **not** use them — it resolves tools through the tenant's OAuth-authorized identity (see `docs/mcp/README.md`). The manifest CRUD is the platform's side of the contract; the gateway reads the same `ToolManifests` records through a server-to-server path that will be added later.
+These are the **dashboard/management** endpoints, gated by `manage_tools`. The MCP gateway does **not** use them — it resolves tools through the tenant's OAuth-authorized identity (see `docs/mcp/README.md`). The manifest CRUD is the platform's side of the contract; the gateway reads the same `ToolManifests` records through the server-to-server path in §8.3.
 
 Guards worth knowing (return 400 `{ error }`):
 - Tenant identifier must match `^[a-z0-9-]+$` and be unique.
@@ -453,6 +462,16 @@ Guards worth knowing (return 400 `{ error }`):
 - Role names unique per tenant; actions must come from `ActionCatalog`.
 - Tool manifest: tool name lowercase letters/digits/underscores only, ≤ 200 chars; description required, ≤ 1000; `inputSchema` and `execution` must be JSON objects; no empty scope strings.
 - `POST /tenant/users`: email format, password ≥ 8 chars, role exists in the workspace.
+
+### 8.3 Gateway-facing manifest endpoint (server-to-server)
+
+The Python gateway does **not** use the admin `manage_tools` endpoints. It calls:
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/internal/gateway/manifests?tenant={slug}` | `X-Gateway-Api-Key` (server-to-server) | The tenant's active manifest catalog that backs `tools/list` / `tools/call`. 404 for an unknown tenant, 403 when the tenant is suspended. |
+
+Tenant identity on this path is the `tenant` query parameter, not `X-Tenant-Id`. The path is excluded from `TenantValidationMiddleware` and `TenantSuspensionMiddleware` so the gateway receives a clean 403 rather than a middleware 400.
 
 ## 9. Error contract
 
@@ -532,7 +551,7 @@ With no connection string configured (`appsettings.json` has `""`), the API uses
 
 ```
 cd apps/platform
-dotnet test src/Tessera.Platform.Tests   # 38 tests pass (as of 2026-09-07)
+dotnet test src/Tessera.Platform.Tests   # 46 tests pass (as of 2026-09-12)
 ```
 
 | Test class | What | Key scenarios |
@@ -540,6 +559,8 @@ dotnet test src/Tessera.Platform.Tests   # 38 tests pass (as of 2026-09-07)
 | `AuthFlowTests` | first-party auth flows | platform invite bootstrapping exactly one Superadmin; registration without invite rejected + generic; refresh rotation + reuse revocation; logout revokes family; change-password revokes all sessions; password reset flow; email verification when enabled; MFA enroll + login flow |
 | `McpOAuthTests` | MCP OAuth AS end-to-end | discovery metadata advertises required capabilities (S256, tools, offline_access, issuer, endpoints, JWKS); full authorization-code + PKCE dance (anonymous → redirect to portal login → cookie → consent redirect → portal consent → authorize redirect with code → token exchange → refresh rotation → replay of rotated refresh rejected); wrong-tenant login rejected |
 | `ManifestTests` | tool manifest CRUD + authz | Acme Dental sample manifests seeded (book_appointment, cancel_appointment, list_appointments); Admin role includes `manage_tools`; CRUD lifecycle (create → duplicate rejected → list/get → update → soft-delete → name reusable); validation rejects bad payloads (bad name, string schema, array execution, missing name); manifest management requires `manage_tools` (User role forbidden) |
+| `GatewayManifestTests` | gateway-facing manifest read | `GET /internal/gateway/manifests` returns the tenant catalog for the correct `X-Gateway-Api-Key`; 404 unknown tenant; 403 suspended tenant; rejects a missing or wrong key |
+| `CimdTests` | CIMD client registration | `ClientIdMetadataService` accepts a valid https client_id metadata document and rejects a malformed one; loopback redirect URIs match port-agnostically |
 
 Test factories: `TestAppFactory` (`WebApplicationFactory<Program>`) with per-factory isolated InMemory store name (`Database:InMemoryName`), fixed test signing key, rate limiting off by default, email verification off by default. `RecordingEmailSender` captures emails so tests can extract invite/verification/reset tokens. Helpers in `ApiTestHelpers` (superadmin login, tenant creation, invite redemption, team setup, auth/tenant header helpers).
 

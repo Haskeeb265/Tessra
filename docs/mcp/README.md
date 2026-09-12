@@ -2,7 +2,7 @@
 
 > **Status:** working design + engineering reference — the authoritative record of what we've decided, what's built, what's still open, and what's deferred. Update it whenever a decision lands.
 >
-> **Related:** `docs/README.md` (overall system — index), `docs/platform/README.md` (C# platform service — auth, data, middleware, endpoints, MCP OAuth AS), `docs/web/README.md` (portals + OAuth login/consent pages), `docs/TABLES.md` (database schema reference), `docs/sample-smb/*.json` (Acme Dental test fixture), `CONCERNS.md` (gaps + decisions).
+> **Related:** `docs/README.md` (overall system — index), `docs/platform/README.md` (C# platform service — auth, data, middleware, endpoints, MCP OAuth AS), `docs/web/README.md` (portals + OAuth login/consent pages), `docs/TABLES.md` (database schema reference), `docs/sample-smb/*.json` (Acme Dental test fixture), `docs/CONCERNS.md` (gaps + decisions), `docs/FLOW.md` (end-to-end diagrams).
 >
 > The original standalone MCP R&D/spec artifacts (`docs/mcp.md`, `docs/mcp-rnd-2026-09.md`, `docs/mcp-auth-platform.md`, `docs/mcp-auth-platform-local-run.md`, `docs/sample_smb.md`) were consolidated into this doc, `docs/platform/README.md`, and `docs/sample-smb/` on 2026-09-07 — any remaining references below to them mean this doc.
 
@@ -102,7 +102,7 @@ Local/dev variant: `https://tessera.local/t/{tenant-slug}/mcp` behind the Caddy 
 - Login/consent **pages live in the Next.js app** (per-tenant branding, unified with the admin dashboard) — built.
 - The existing first-party auth stays as-is; OpenIddict composes with it (see §3.6 "why the current auth isn't enough").
 
-**What's built (2026-09-07):** OpenIddict 7.7 on `/connect/authorize` + `/connect/token`; JSON `/connect/login` (+ `/login/mfa` reusing `TotpService`); `GET /connect/consent-info` + `POST /connect/consent`; deny via `?deny=1`; `POST /connect/logout`; discovery at `/.well-known/openid-configuration`; PKCE S256; `iss`; `tools` + `offline_access` scopes; **signed RS256 JWT access tokens** (JWS, `at+jwt`, kid `mcp-signing-v1`, published at `/.well-known/jwks`) — the Python gateway (when built) validates them via JWKS signature verification + audience + expiry + issuer + scopes checks; encrypted JWT refresh tokens with strict single-use rotation; separate non-tenant `OpenIddictDbContext` + migrations; pre-registered dev client `tessera-local-dev` (loopback `http://127.0.0.1:9876/callback`); tenant resolution from the RFC 8707 `resource` param; suspension + email-verification + `token_version` checks; middleware exclusions extended; 38/38 tests pass including a full auth-code + PKCE integration test.
+**What's built (2026-09-07):** OpenIddict 7.7 on `/connect/authorize` + `/connect/token`; JSON `/connect/login` (+ `/login/mfa` reusing `TotpService`); `GET /connect/consent-info` + `POST /connect/consent`; deny via `?deny=1`; `POST /connect/logout`; discovery at `/.well-known/openid-configuration`; PKCE S256; `iss`; `tools` + `offline_access` scopes; **signed RS256 JWT access tokens** (JWS, `at+jwt`, kid `mcp-signing-v1`, published at `/.well-known/jwks`) — the Python gateway validates them via JWKS signature verification + audience + expiry + issuer + scopes checks; encrypted JWT refresh tokens with strict single-use rotation; separate non-tenant `OpenIddictDbContext` + migrations; pre-registered dev client `tessera-local-dev` (loopback `http://127.0.0.1:9876/callback`); tenant resolution from the RFC 8707 `resource` param; suspension + email-verification + `token_version` checks; middleware exclusions extended; **46/46 tests pass** including a full auth-code + PKCE integration test. Added in the 2026-09-09 → 09-12 sessions: CIMD client registration (`ClientIdMetadataService` + `CimdAuthorizationRequestHandler`), the AS discovery amendment that advertises `client_id_metadata_document_supported: true` and `none` in `token_endpoint_auth_methods_supported` (OpenIddict 7.7 emits neither), the relative-endpoint-URI + trusted-forwarded-headers fix that made the flow work behind Caddy/tunnels, and the gateway-facing manifest endpoint.
 
 **Access token format note (why this matters for the gateway):** The AS issues signed-only (not encrypted) JWT access tokens by calling `options.DisableAccessTokenEncryption()` in `Program.cs` while still keeping an encryption key for refresh tokens. The Python gateway validates these tokens via `/.well-known/jwks` — it needs only the public signing key, not the C# AES encryption key. This is the textbook remote-resource-server design and unblocks the gateway without sharing secrets across the service boundary.
 
@@ -163,7 +163,7 @@ The existing `RateLimiting` module covers it; MCP calls get per-tenant, per-user
 | Q3 | **Per-user visibility rules** — what can a user see/do (Jane only her appointments; front desk everything) | Maps onto our role/action system; needed for real SMBs | Reuse `ActionChecks`; design per-SMB mapping during v1 |
 | Q4 | **OpenIddict spike outcome** | Build-vs-buy decision point | **Answered — build it ourselves.** Commit to OpenIddict; no hosted-AS fallback. The spike became the AS core (§2.6) |
 | Q5 | **Which Python MCP SDK** (official SDK vs FastMCP) | Gateway ergonomics; stateless-core support per 2026-07-28 spec | **Answered — official MCP SDK v2** (`mcp>=2`). Closest to the 2026-07-28 spec (stateless core); ecosystem converged on one base (FastMCP 4 is built on the rewritten SDK v2) |
-| Q6 | **Client registration practicalities** — how ChatGPT/Claude register (CIMD vs DCR); pre-register our endpoint | Needed for the popup flow to work end-to-end in real assistants | CIMD is the current spec path; **deferred** to the gateway milestone (AS core built first) |
+| Q6 | **Client registration practicalities** — how ChatGPT/Claude register (CIMD vs DCR); pre-register our endpoint | Needed for the popup flow to work end-to-end in real assistants | **Answered — CIMD built.** The AS fetches/caches the client's metadata document; the discovery amendment makes Claude pick its published identity. DCR is not needed |
 | Q7 | **Consent/scope granularity for v1** | UX + security balance | Default: one coarse scope per tenant (`tools` + `offline_access`) — built |
 | Q8 | **Usage metering design** (per-user/per-tool events → billing) | Feeds F1 billing later; the gateway must emit events now | Emit usage events from the gateway to C# from day one; billing later |
 | Q9 | **Gateway-facing manifest read endpoint** in C# | Server-to-server auth (gateway client credential or signed header) distinct from the admin `manage_tools` dashboard endpoints | **Not yet built** — part of the gateway milestone |
@@ -171,6 +171,8 @@ The existing `RateLimiting` module covers it; MCP calls get per-tenant, per-user
 ---
 
 ## 5. Backlog — deferred ("implement later")
+
+> Items marked **✅ shipped 2026-09** were on this list and are now built — they are kept here so the original plan stays auditable.
 
 | Item | Defer until | Trigger / notes |
 |---|---|---|
@@ -183,11 +185,11 @@ The existing `RateLimiting` module covers it; MCP calls get per-tenant, per-user
 | Billing & entitlements (F1) | Post-v1 | Suspension mechanism (B3) is already ready to hook into failed-payment |
 | Audit trail (D4) + envelope versioning (A6) | P2 | Platform-level "who changed what" |
 | Monitoring sink (E5) / CI-CD (E2) | Roadmap phases 4/7 | Serilog + TraceId already exist; no sink wired |
-| CIMD client registration + Claude redirect-URI handling | Gateway milestone | OpenIddict has no built-in CIMD; custom fetch/cache + validate |
-| RS256 JWKS-based access-token verification in the **Python gateway** | Gateway milestone | The C# AS already issues signed RS256 JWTs and serves `/.well-known/jwks`; what's left is the Python `TokenVerifier` consuming them |
-| Gateway-facing manifest read endpoint (server-to-server) | Gateway milestone | Distinct from admin `manage_tools` endpoints |
-| Local Acme Dental backend stub (mock `api.acmedental.test`) | Gateway milestone | So `call_tool` executes end-to-end against a real-looking backend |
-| Tunnel/TLS story for hosted-assistant testing | Hosted-assistant milestone | cloudflared/ngrok/Secure MCP Tunnel per target client |
+| CIMD client registration + Claude redirect-URI handling | ✅ Shipped 2026-09 | OpenIddict has no built-in CIMD; custom fetch/cache + validate |
+| RS256 JWKS-based access-token verification in the **Python gateway** | ✅ Shipped 2026-09 | The C# AS already issues signed RS256 JWTs and serves `/.well-known/jwks`; what's left is the Python `TokenVerifier` consuming them |
+| Gateway-facing manifest read endpoint (server-to-server) | ✅ Shipped 2026-09 | Distinct from admin `manage_tools` endpoints |
+| Local Acme Dental backend stub (mock `api.acmedental.test`) | ✅ Shipped 2026-09 | So `call_tool` executes end-to-end against a real-looking backend |
+| Tunnel/TLS story for hosted-assistant testing | ✅ Shipped 2026-09 | cloudflared/ngrok/Secure MCP Tunnel per target client |
 | End-user (Jane) identity model | Gateway milestone | Admin-created mirror user per tenant; changes who the subject is, not the OAuth plumbing |
 
 ---
@@ -209,23 +211,24 @@ tessera/
                                   # authz via ActionChecks; OpenIddict AS  (BUILT)
         Tessera.Platform.Domain/  # models + constants
         Tessera.Platform.Observability/
-        Tessera.Platform.Tests/   # 38 tests pass (as of 2026-09-07)
+        Tessera.Platform.Tests/   # 46 tests pass (as of 2026-09-12)
 
-  apps/mcp-server/               # Python — generic, tenant-aware MCP server
-                                  # (NOT YET SCAFFOLDED — greenfield)
+  apps/mcp-server/               # Python — generic, tenant-aware MCP server (BUILT)
+                                  # per-tenant low-level Server, stateless Streamable HTTP
       src/
-        core/                    # MCP protocol: list_tools/call_tool, stateless
+        core/gateway.py          # MCP protocol: list_tools/call_tool, stateless
                                   # request handling, transport
-        manifest/                # pydantic models; cache-aside loader (Redis
-                                  # in front of the Platform API, or in-process TTL
-                                  # cache for local/demo)
+        manifest/                # pydantic models; TTL cache-aside loader over
+                                  # GET /internal/gateway/manifests
+                                  # (in-process TTL cache for local/demo)
         executors/
           http_executor.py       # generic HTTP-mapped tool execution (v1)
           custom_fn/             # Tier-3 SDK-registered executors (later)
-        auth/                    # bearer validation (JWKS / introspection via C#)
-        telemetry/               # OpenTelemetry export to a collector
-        tests/
-      pyproject.toml
+        auth/token_verifier.py   # bearer validation (RS256 via the C# AS JWKS)
+        utils/jsonpath.py        # response-mapping JSONPath subset
+        tests/                   # 39 tests pass (as of 2026-09-12)
+      stub_backend/app.py        # local Acme Dental backend (fixture)
+      pyproject.toml / uv.lock
 
   packages/
     contracts/                    # shared JSON Schema for manifests; OpenAPI
@@ -284,7 +287,7 @@ Synthesis of the MCP authorization spec (2026-07-28), Claude connector docs, and
    → The SDK generates this for the Python RS from `AuthSettings`.
 3. Client goes to the AS issuer → RFC 8414 (`/.well-known/oauth-authorization-server`) **and/or** OIDC discovery (`/.well-known/openid-configuration`) — clients support both; we serve both. Metadata must advertise:
    - `code_challenge_methods_supported: ["S256"]` (PKCE is always used) — **built**,
-   - `client_id_metadata_document_supported: true` **and** `token_endpoint_auth_methods_supported` containing `"none"` → this pair is what makes Claude (and spec-compliant clients) pick **CIMD** over DCR — **deferred** (CIMD custom work),
+   - `client_id_metadata_document_supported: true` **and** `token_endpoint_auth_methods_supported` containing `"none"` → this pair is what makes Claude (and spec-compliant clients) pick **CIMD** over DCR — **built** (OpenIddict ships no CIMD, so the discovery payload is amended from an `ApplyConfigurationResponseContext` handler),
    - `scopes_supported` including `offline_access` (clients append it to get refresh tokens; ChatGPT requires refresh tokens to keep a connector alive) — **built**,
    - `authorization_response_iss_parameter_supported: true` (RFC 9207 `iss`) — **built**,
    - `issuer`, `authorization_endpoint`, `token_endpoint`, `jwks_uri` — **built** (JWKS URI serves signing key `mcp-signing-v1`, RS256). Access tokens are **signed RS256 JWTs** (not opaque reference tokens; see §2.6 and `docs/platform/README.md` §6.2); the Python gateway validates them via JWKS once its `TokenVerifier` exists.
@@ -303,12 +306,12 @@ This is the exact contract the Python gateway's `TokenVerifier` will consume: fe
 
 - Endpoints: `/authorize`, `/token` (+ discovery above). `/token` must accept `application/x-www-form-urlencoded` (RFC 6749 §4.1.3) — clients send this content type; JSON-only parsers 415 and break. **Built** (form-urlencoded).
 - `resource` (RFC 8707) **required** in authorize + token requests, must identify the tenant MCP endpoint; tokens are audience-bound to it. **Built** (resource → tenant via `McpOAuthService.TenantSlugFromResource`; token identity carries `resource` as audience).
-- `iss` in authorization responses; validate redirect URIs against client metadata. **Built** (iss); redirect-URI validation against CIMD doc deferred.
+- `iss` in authorization responses; validate redirect URIs against client metadata. **Built** (iss); redirect-URI validation against the CIMD doc is **built** (`ClientIdMetadataService`: https-only client_id, exact-URL match, loopback port-agnostic redirect URIs).
 - Refresh tokens: **rotate for public clients** (return the new refresh token in the same response that invalidates the old one); errors must be `invalid_grant` (not `invalid_request`). **Built** (strict single-use rotation via `SetRefreshTokenReuseLeeway(0)`; replay → rejected).
 - Timeouts clients apply: discovery/registration/token ≈ **10 s**, refresh ≈ **30 s**. Keep the AS fast; don't buffer token responses behind slow upstream work.
 - TLS required for everything except loopback flows. **Built** (Caddy TLS proxy; dev-over-http allowed outside Production via `DisableTransportSecurityRequirement()`).
 
-### 8.4 Client registration (CIMD first — deferred)
+### 8.4 Client registration (CIMD — built)
 
 - Client sends a `client_id` that is an **HTTPS URL** pointing at a Client ID Metadata Document (`client_id`, `client_name`, `redirect_uris`, `token_endpoint_auth_method`, …). AS **fetches** the doc, validates `client_id` matches the URL exactly, validates presented redirect URIs against it, caches per HTTP cache headers.
 - Claude Code hosts its own CIMD (URL client_id). Claude's hosted surfaces (Claude.ai web/Desktop/mobile) have documented behaviors; callback URL is `https://claude.ai/api/mcp/auth_callback`; Claude Code uses loopback (`http://localhost:<port>/callback` and `http://127.0.0.1:<port>/callback`) — the AS **must match port-agnostically**.
@@ -326,7 +329,7 @@ This is the exact contract the Python gateway's `TokenVerifier` will consume: fe
 - **ChatGPT:** "custom connectors" live under **developer mode**, which currently requires a **Business/Enterprise/Edu** workspace (admin-enable + per-user toggle). Pro can connect read/fetch-permission MCPs in dev mode; full write/modify MCP is Business/Edu. ChatGPT is remote-only (no direct localhost): local dev machines use OpenAI's **Secure MCP Tunnel** or a public HTTPS URL. Search/fetch tools are **no longer required**. Published apps use a **frozen tool snapshot** — tool additions/edits need an admin "refresh" (re-publish) — relevant to our iterate-on-manifests loop. OAuth connectors must issue refresh tokens and advertise `offline_access`.
 - **No hosted assistant works over plain `http://` from a public host.** Local testing stays on loopback (Inspector, Claude Code, desktop) until we add a TLS tunnel.
 
-### 8.7 Runtime (gateway side — Python, deferred)
+### 8.7 Runtime (gateway side — Python, built)
 
 | # | Requirement | Where | Impact |
 |---|---|---|---|
@@ -360,13 +363,13 @@ Claude Code --GET PRM doc--> Gateway /.well-known/oauth-protected-resource/…
 Claude Code --GET AS metadata (RFC 8414 + OIDC)--> C# /.well-known/…
               (PKCE S256, CIMD supported, offline_access, iss param)
 Claude Code --GET /connect/authorize?client_id=<its CIMD URL>&resource=…t/acme-dental/mcp…--> C#
-  1. C# fetches Claude Code's CIMD doc (client_id URL) → validates redirect URIs   [deferred]
+  1. C# fetches Claude Code's CIMD doc (client_id URL) → validates redirect URIs   [built]
   2. Login (admin@tessera.com … against acme-dental's Users row; MFA if enabled)   [built]
   3. Consent: "Allow Claude Code to act as you in Acme Dental?" → code              [built]
 Claude Code --POST /connect/token (code + PKCE verifier, form-urlencoded)--> C#
   → { access_token, refresh_token }
 Claude Code --POST /t/acme-dental/mcp (Bearer)--> Gateway
-  Gateway TokenVerifier: signature via cached JWKS; aud == own URL; exp; scope ⇒ tools/list   [deferred]
+  Gateway TokenVerifier: signature via cached JWKS; aud == own URL; exp; scope ⇒ tools/list   [built]
 ```
 
 ### Flow 2 — Every later call
@@ -419,7 +422,7 @@ Missing → remaining work items (status after 2026-09-09 live boot):
 ~~3. Python gateway~~ — **BUILT** (`apps/mcp-server`, uv/Python 3.13): manifest→Tool mapping, TTL loader (sentinel-caches unknown/suspended), HTTP executor (templates, `X-Api-Key` credential injection from env `CREDENTIALS` map, JSONPath response mapping, host overrides), per-tenant low-level `Server` + stateless Streamable HTTP, raw-ASGI dispatch. **39/39 pytest green; live three-service boot verified 2026-09-09** (platform :5010 → gateway :8000 → stub :9100): tools/list + book/list/call against the stub all worked over real HTTP. Production vault resolution for `vault://` refs remains deferred (dev: env map).
 ~~4. Local Acme Dental backend stub~~ — **BUILT** (`apps/mcp-server/stub_backend/app.py`): book/list/cancel + reset, API-key protected; runs standalone (`uvicorn stub_backend.app:app --port 9100`) and in tests via ASGI transport.
 ~~6. Python gateway `TokenVerifier`~~ — **BUILT** (`auth/token_verifier.py`): JWKS fetch/cache/refresh-on-unknown-kid, RS256, iss/aud(=tenant resource)/exp validation; async per SDK contract. Verified in-process (401 challenge → PRM → valid-token 200; wrong-aud 401; missing-scope 403 via SDK middleware). The live AS round-trip over Caddy TLS is the remaining E2E item.
-5. **Tunnel/TLS story** for hosted-assistant testing (cloudflared/ngrok/Secure MCP Tunnel per target client) + docker/Caddy wiring for the gateway (`/t/*` + PRM paths). [NEXT]
+~~5. Tunnel/TLS story for hosted-assistant testing + docker/Caddy wiring for the gateway (`/t/*` + PRM paths).~~ — **DONE** (`scripts/start-claude-web.sh`, Caddy routing in compose, cloudflared tunnel; **Claude web live-verified 2026-09-12**).
 7. **End-user (Jane) identity model** (admin-created mirror user per tenant). [deferred]
 8. **Per-tool scopes** (manifest `required_scopes` enforceable once tokens carry them). [deferred]
 
@@ -427,7 +430,7 @@ Missing → remaining work items (status after 2026-09-09 live boot):
 
 ## 13. Local run (OAuth + TLS)
 
-The local run steps below are the canonical reference (the earlier standalone `docs/mcp-auth-platform-local-run.md` was consolidated into this section on 2026-09-07). Summary:
+The local run steps below are the canonical reference (the earlier standalone `docs/mcp-auth-platform-local-run.md` was consolidated into this section on 2026-09-07). **The one-command path — tunnel + stack + verification — is `./scripts/start-claude-web.sh` (§13.1).** The manual steps are:
 
 1. Add `127.0.0.1 tessera.local` to your hosts file (`/etc/hosts` or `C:\Windows\System32\drivers\etc\hosts`).
 2. Rebuild + start the stack: `cd apps/platform && docker compose up -d --build` (runs migrations + seeds the `tessera-local-dev` client). The Caddy proxy routes the API, the MCP gateway (`mcp-gateway`), the stub backend (`stub-backend`), and the Next.js portal (running on the host at :3000).
@@ -519,14 +522,14 @@ See `docs/sample-smb/acme-dental-manifest.json` + `acme-dental-book-appointment.
 - **Tenant:** `acme-dental` (seeded at startup on both Postgres and InMemory).
 - **Seeded manifests (3):** `book_appointment`, `cancel_appointment`, `list_appointments` — each with full `inputSchema`, `execution` (HTTP config, `credential_ref`), and `requiredScopes`. Stored as `ToolManifests` records via `SampleSmbSeeder`.
 - **Credentials:** tenant admin `admin@tessera.com` / `Admin123!` (per tenant, PostgreSQL only); platform superadmin `superadmin@tessera.com` / `Admin123!` (both providers).
-- **Target backend:** `https://api.acmedental.test` is a **fake backend for tests** — it does not need to exist; the HTTP executor tests can use a local test server or recorded responses.
+- **Target backend:** `https://api.acmedental.test` does **not** exist. In dev the gateway rewrites that host to the local stub backend (`apps/mcp-server/stub_backend/app.py`, :9100) via `SMB_HOST_OVERRIDES`; in compose it points at the `stub-backend` container. Tests use an in-process ASGI transport.
 - **Sample manifest files:** `docs/sample-smb/acme-dental-manifest.json` and `docs/sample-smb/acme-dental-book-appointment.json` are the human-readable source of truth and are mirrored by `SampleSmbSeeder`.
 
 The first three tools are the **seeded set**. `patient_inquiry` is a planned mock tool for future SDK-tier work and is **not** seeded yet.
 
 ## 15. Concerns register (everything raised so far)
 
-See `CONCERNS.md` — it's the shared concerns register for the whole product. The items most relevant to MCP:
+See `docs/CONCERNS.md` — it's the shared concerns register for the whole product. The items most relevant to MCP:
 
 | # | Concern | Status | Resolution |
 |---|---|---|---|
@@ -550,8 +553,8 @@ See `CONCERNS.md` — it's the shared concerns register for the whole product. T
 
 ## 16. Suggested implementation phases
 
-- **Phase A — Gateway core (✅ DONE 2026-09-09):** `apps/mcp-server` scaffolded (uv/Python 3.13, official SDK v2 `mcp 2.2.0`); low-level `Server` per tenant; manifest fetch + TTL cache from C# via `GET /internal/gateway/manifests` (`X-Gateway-Api-Key`); `tools/list` + `tools/call` with HTTP executor → local Acme Dental stub; **39/39 pytest green** (in-process `Client(server)` + HTTP-level + OAuth-mode tests). **Live-verified end-to-end 2026-09-09:** platform (:5010) + gateway (:8000, `MCP_AUTH_MODE=none`) + stub (:9100) — tools/list returned the 3 seeded manifests; book_appointment booked, listed and cancelled a real appointment through the whole chain (see root `progress.md` §3 for the transcript and boot gotchas). Protocol notes baked into tests: 2026-07-28 stateless POSTs need the `params._meta` envelope (`io.modelcontextprotocol/protocolVersion` + `clientCapabilities`) and `Mcp-Method`/`Mcp-Name` headers.
-- **Phase B — Local assistant end-to-end (NEXT):** boot via `docker compose up -d --build` + Caddy TLS; connect MCP Inspector (protocol-level) then Cursor/VS Code (free, reaches localhost, full OAuth) and iterate on tool ergonomics; then Claude web via tunnel.
+- **Phase A — Gateway core (✅ DONE 2026-09-09):** `apps/mcp-server` scaffolded (uv/Python 3.13, official SDK v2 `mcp 2.2.0`); low-level `Server` per tenant; manifest fetch + TTL cache from C# via `GET /internal/gateway/manifests` (`X-Gateway-Api-Key`); `tools/list` + `tools/call` with HTTP executor → local Acme Dental stub; **39/39 pytest green** (in-process `Client(server)` + HTTP-level + OAuth-mode tests). **Live-verified end-to-end 2026-09-09:** platform (:5010) + gateway (:8000, `MCP_AUTH_MODE=none`) + stub (:9100) — tools/list returned the 3 seeded manifests; book_appointment booked, listed and cancelled a real appointment through the whole chain (see `docs/progress.md` §3 for the transcript and boot gotchas). Protocol notes baked into tests: 2026-07-28 stateless POSTs need the `params._meta` envelope (`io.modelcontextprotocol/protocolVersion` + `clientCapabilities`) and `Mcp-Method`/`Mcp-Name` headers.
+- **Phase B — Local assistant end-to-end (✅ DONE 2026-09-12):** boot via `docker compose up -d --build` + Caddy TLS; connect MCP Inspector (protocol-level) then Cursor/VS Code (free, reaches localhost, full OAuth) and iterate on tool ergonomics; then Claude web via tunnel.
 
   Local stack commands (current):
 

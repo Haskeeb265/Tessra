@@ -141,9 +141,16 @@ OAuth interactive-flow client used by the two pages:
 
 Tenant is passed as `X-Tenant-Id`, mirroring the platform's existing API convention.
 
+### 8.3 Two dev-mode gotchas that look like OAuth bugs
+
+Both of these present as "the OAuth flow is broken" but are portal-side:
+
+- **Next.js blocks `/_next/*` requests from non-localhost origins.** When the stack is reached through a tunnel, those dev-asset requests carry the tunnel `Origin` and get 403 — so the client bundle never loads, the page renders from SSR but never hydrates, and the form falls back to a native submit that drops `?tenant=` / `?returnUrl=`, surfacing as **"No workspace was specified."** Fix: `apps/web/next.config.ts` sets `allowedDevOrigins: ["*.trycloudflare.com", "localhost:3000", "127.0.0.1:3000"]`. `scripts/start-claude-web.sh` asserts this (`portal assets : OK`) before printing the connector URL so it cannot silently regress.
+- **Password managers autofill without firing `onChange`.** Anything typed before hydration also sticks in the DOM without updating React state, so a controlled form submitted `{"email":"","password":""}` (26 bytes) and got a 401. Fix: the login and MFA forms read `new FormData(e.currentTarget)` at submit time, and the inputs carry `name` attributes so a native submit also sends values.
+
 ## 9. CORS & origins
 
-CORS is configured in the platform (`Cors:AllowedOrigins`, defaults `http(s)://localhost:3000` and `:3001`). The business portal calls the API at `NEXT_PUBLIC_API_URL` (defaults `http://localhost:5085`; `.env.local` currently sets `http://localhost:5000` for Docker). Behind the local Caddy TLS proxy the whole stack is served on one origin (`https://tessera.local`), so the `/oauth/*` pages call `/connect/*` with relative URLs and don't depend on this variable. The platform portal uses the same variable.
+CORS is configured in the platform (`Cors:AllowedOrigins`, defaults `http(s)://localhost:3000` and `:3001`). The business portal calls the API at `NEXT_PUBLIC_API_URL` (defaults `http://localhost:5085`; `.env.local` currently sets `http://localhost:5000` for Docker). Behind the local Caddy TLS proxy the whole stack is served on one origin (`https://tessera.local`), so the `/oauth/*` pages call `/connect/*` with relative URLs and don't depend on this variable. The platform portal uses the same variable. When the stack is reached through a cloudflared tunnel instead, the origin is the tunnel hostname — the portal must be allowed to load its dev assets from it (see §8.3).
 
 ## 10. Known gaps (web-specific)
 
@@ -156,4 +163,6 @@ CORS is configured in the platform (`Cors:AllowedOrigins`, defaults `http(s)://l
 
 ## 11. Where to go next
 
-For the OAuth authorization server these pages talk to, see `docs/platform/README.md` §6 and `docs/mcp/README.md`. For the overall system (index), see `docs/README.md`.
+The MCP journey these pages serve is **live end-to-end** (verified 2026-09-12): a Claude web connector → `/oauth/login` → `/oauth/consent` → `/t/acme-dental/mcp` tool calls. To run it, use `./scripts/start-claude-web.sh` from the repo root.
+
+For the OAuth authorization server these pages talk to, see `docs/platform/README.md` §6 and `docs/mcp/README.md`. For the end-to-end diagrams, see `docs/FLOW.md` §5–6. For the overall system (index), see `docs/README.md`.

@@ -1,15 +1,29 @@
 # Tessera — Tasks
 
-> **Current sprint**: Two portals + envelopes/roles/actions ✅
-> **Last updated**: 2026-08-13 (end of Session 10)
+> **Current sprint**: MCP gateway + OAuth live for Claude web ✅
+> **Last updated**: 2026-09-12 (end of the MCP gateway milestone)
 
 ---
 
 ## In Progress
 
-- [ ] **Next milestone**: Choose next feature (Observability / CI pipeline)
+- [ ] **End-user (Jane) identity model** + per-tool scopes (manifest `required_scopes`) — the remaining product gap
+- [ ] **Manifest versioning vs authorization** — decide what happens to cached tools, issued tokens and consent when a manifest changes
+- [ ] **Observability** (Phase 4) — structured log conventions, correlation IDs across C#/TS, metrics/tracing sink
+- [ ] **CI pipeline** (Phase 7) — GitHub Actions split by path
 
 ## Completed
+
+### MCP Gateway + OAuth — Session 11 (live-verified 2026-09-12)
+- [x] **MCP OAuth authorization server** — OpenIddict 7.7 on `/connect/authorize` + `/connect/token`, JSON login/MFA, consent + `McpConsents`, logout, discovery + `/.well-known/jwks`, PKCE S256, RS256 signed access tokens, single-use refresh rotation
+- [x] **CIMD client registration** — `ClientIdMetadataService` (fetch/cache/validate the client_id metadata document) wired ahead of OpenIddict's built-in client lookup, plus the discovery amendment (`client_id_metadata_document_supported` + `token_endpoint_auth_methods_supported: none`)
+- [x] **Caddy/tunnel correctness** — relative endpoint URIs + trusted `X-Forwarded-*` so the AS advertises public `https://` URLs behind the proxy; JWKS built from the persisted signing key (`kid mcp-signing-v1`)
+- [x] **Gateway-facing manifest endpoint** — `GET /internal/gateway/manifests?tenant={slug}` guarded by `X-Gateway-Api-Key` (404 unknown / 403 suspended)
+- [x] **Python MCP gateway** (`apps/mcp-server`) — per-tenant low-level `Server`, stateless Streamable HTTP, RFC 9728 PRM, TTL manifest loader, HTTP executor, RS256 `TokenVerifier` with per-tenant `aud` binding — 39/39 tests
+- [x] **Acme Dental stub backend** — book/list/cancel/reset, API-key protected
+- [x] **OAuth login + consent pages** (`apps/web/app/oauth/*`) and portal dev-origin/autofill fixes
+- [x] **One-command live stack** — `scripts/start-claude-web.sh` (tunnel + compose + portal + OAuth-surface assertions); gateway + stub services in compose
+- [x] **Verified** — C# 46/46, Python 39/39; Claude web connector authenticated and called all three tools
 
 ### Two-Portal Architecture — Session 10
 - [x] **Superadmin auth** — `AdminUser` (platform-level, no tenant), `POST /admin/auth/login`, `SuperAdminOnly` policy, `/admin` excluded from tenant validation

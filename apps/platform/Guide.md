@@ -7,7 +7,7 @@ how to run it, test it, and what commands to use.
 
 > 📐 **For how the system works** — the data model, middleware pipeline, auth
 > flows, tenant isolation, API surface, user flows, and design decisions — read
-> **[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)**. It is the single
+> **[`docs/README.md`](../../docs/README.md)**. It is the single
 > source of truth. This file deliberately does **not** duplicate it.
 
 The platform service owns the cross-cutting concerns every tenant-facing request
@@ -62,6 +62,9 @@ With no connection string, the API uses the **in-memory database**:
 | API (Docker) | `5000` | `platform-api-1`, PostgreSQL-backed, migrations run on startup |
 | API (local `dotnet run`) | `5085` | InMemory fallback |
 | PostgreSQL | `5432` | `platform-db-1`, db `tessera_platform`, `pgdata` volume persists |
+| MCP gateway | `8000` | `apps/mcp-server` (`mcp-gateway` in compose) — `/t/{tenant}/mcp` + PRM |
+| Acme Dental stub | `9100` | `stub-backend` in compose — the fixture SMB backend the tools call |
+| Caddy (single public origin) | `80` / `443` | Routes API + portal + gateway on one hostname (`tessera.local` or a tunnel) |
 | Business portal | `3000` | `apps/web` |
 | Platform portal | `3001` | `apps/platform-portal` |
 
@@ -108,7 +111,7 @@ curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/me
 curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/envelope
 curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/tenant/users
 
-# 6. Widgets (placeholder demo resource — see ARCHITECTURE.md §3)
+# 6. Widgets (placeholder demo resource — see docs/README.md §3)
 curl -H "Authorization: Bearer $TOK" -H "X-Tenant-Id: gamma-corp" $API/widgets
 
 # 7. Cross-tenant token reuse → 403
@@ -118,7 +121,7 @@ curl -o /dev/null -w "%{http_code}\n" \
 ```
 
 The full endpoint table (every route + its auth requirement) is in
-`docs/ARCHITECTURE.md` §7.
+`docs/platform/README.md` §8.
 
 ---
 
@@ -162,7 +165,7 @@ run `dotnet ef database update` as an explicit deploy step (see
 
 ---
 
-## Where things live (details in ARCHITECTURE.md)
+## Where things live (details in `docs/platform/README.md`)
 
 | Concern | Location |
 |---|---|
@@ -175,6 +178,28 @@ run `dotnet ef database update` as an explicit deploy step (see
 | Shared middleware | `src/Tessera.Platform.Observability/` |
 | Wiring / pipeline / seeding | `src/Tessera.Platform.Api/Program.cs` |
 | Config | `appsettings.json` (+ `.Development`, `.Docker`) |
+
+---
+
+## The MCP / Claude web stack (one command)
+
+The MCP gateway, the OAuth authorization server, and the SMB stub are part of the
+same local stack. To exercise the full AI-assistant journey:
+
+```bash
+./scripts/start-claude-web.sh          # tunnel + docker stack + portal + OAuth checks
+./scripts/start-claude-web.sh --stop   # tear it all down
+```
+
+It starts a cloudflared tunnel to `localhost:80`, writes `ORIGIN` into
+`apps/platform/.env`, brings up compose (`api` + `db` + `caddy` + `mcp-gateway` +
+`stub-backend`), starts the Next.js portal on :3000, then verifies discovery,
+JWKS, the RFC 9728 PRM document, the gateway's 401 challenge, and that the portal
+can hydrate over the tunnel hostname. The URL it prints goes into
+claude.ai → Settings → Connectors.
+
+Details: `docs/LIVE_TESTING_GUIDE.md` (the testing ladder) and `docs/FLOW.md`
+(end-to-end diagrams).
 
 ---
 
@@ -193,5 +218,5 @@ Roadmap, tasks, decisions, learning log, and progress live in
 - **Tenant-scoped queries**: always `FirstOrDefaultAsync`/`ToListAsync` — never
   `FindAsync` (it bypasses Finbuckle's global query filters).
 - **Errors**: throw or return `Results.*`; the global exception middleware
-  shapes every failure into `ApiErrorResponse` (see ARCHITECTURE.md §11).
-- New resources / middleware ordering / gotchas: see `docs/ARCHITECTURE.md`.
+  shapes every failure into `ApiErrorResponse` (see `docs/platform/README.md` §9).
+- New resources / middleware ordering / gotchas: see `docs/platform/README.md` §4.4 and `docs/README.md` §14.

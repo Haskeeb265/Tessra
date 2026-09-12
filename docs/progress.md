@@ -1,6 +1,15 @@
-# Session Progress — MCP Gateway Implementation
+# Build Log — MCP Gateway Implementation (branch `tessera/mcp`)
 
-> Working log for the current session (branch `tessera/mcp`).
+> **Status: complete — every goal met.** Claude web connects to the local SMB and
+> calls its tools; the flow was live-verified end-to-end on 2026-09-12.
+>
+> This is the working log for that milestone, kept for the reasoning and the
+> dead ends. The authoritative references are
+> [`docs/FLOW.md`](FLOW.md) (end-to-end diagrams), [`docs/mcp/README.md`](mcp/README.md)
+> (product model + gateway), and [`docs/platform/README.md`](platform/README.md)
+> (C# service + OAuth AS). See also [`docs/LIVE_TESTING_GUIDE.md`](LIVE_TESTING_GUIDE.md).
+>
+> Working log for the session (branch `tessera/mcp`).
 > Scope: (1) read all docs + current changes, (2) deep R&D on a plug-and-play
 > MCP server that connects the local sample SMB (Acme Dental) to an online AI
 > assistant, (3) test and verify everything. User confirmed: **full OAuth,
@@ -213,16 +222,18 @@ real HTTP (no test doubles):
    authorize → token → authenticated tools/list + tools/call; negatives: no token
    → 401 challenge, wrong aud → 401, missing scope → 403. (The gateway-side
    OAuth unit path is verified; the live AS round-trip is not.)
-5. **Claude web hop (user-assisted)**: started but NOT yet successful — connector
-   was added, but the CIMD fix above is what makes it work. After the fix +
-   reconnect, the success path is: consent popup → log in as
-   `admin@tessera.com`/`Admin123!` → approve → connector "Connected" → call
-   tools from chat.
-6. **Docs**: update `docs/mcp/README.md` phases/gap list (Phase A built),
-   `docs/platform` (gateway endpoint + CIMD), root `readme.md` run
-   instructions, Claude web tunnel guide.
-7. **Housekeeping**: delete/gitignore `apps/platform/final_cookie.txt`,
-   `token_resp.json`, `pkce.txt` before commit.
+5. ~~**Claude web hop (user-assisted)**~~ — **DONE 2026-09-12.** After the CIMD fix
+   and a connector re-add, the whole path ran end to end: consent popup → log in
+   as `admin@tessera.com`/`Admin123!` → approve → connector "Connected" → tools
+   callable from chat (book / list / cancel all verified).
+6. ~~**Docs**~~ — **DONE.** `docs/mcp/README.md`, `docs/platform/README.md` and
+   `docs/web/README.md` now reflect the built CIMD/gateway pieces; `readme.md` is
+   a real project README; `docs/FLOW.md` carries the end-to-end diagrams; the
+   loose root docs moved into `docs/`.
+7. ~~**Housekeeping**~~ — **DONE.** The debug artifacts are covered by
+   `.gitignore` and have been removed, along with the ad-hoc `do_refresh.py`
+   helper, the duplicate `start.ps1` tunnel script, and the uv scaffold
+   placeholder `apps/mcp-server/main.py`.
 
 ## 5. Claude web OAuth — RESOLVED (2026-09-12)
 

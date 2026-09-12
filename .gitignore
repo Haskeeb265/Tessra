@@ -489,9 +489,9 @@ $RECYCLE.BIN/
 .tunnel.pid
 
 # Locally minted OAuth tokens and the ad-hoc helper used while debugging the
-# MCP OAuth flow (see progress.md housekeeping notes).
+# MCP OAuth flow (see docs/progress.md housekeeping notes).
 access_token.txt
-apps/platform/do_refresh.py
+# (The ad-hoc do_refresh.py helper was removed once the OAuth flow went live.)
 
 # Credential artifacts produced by manual curl/PKCE debugging.
 final_cookie.txt

@@ -16,6 +16,13 @@
 > run to confirm nothing is unmapped — every file is accounted for in §22–23.
 >
 > **Last updated:** 2026-08-18 · branch `tessera/mcp` (multitenancy codebase).
+>
+> ⚠️ **Historical — superseded by the MCP build.** This dry run describes the
+> pre-MCP codebase. The MCP tool manifests, OAuth authorization server (CIMD,
+> JWKS, `/connect/*`) and the Python gateway landed afterwards. For current
+> behaviour use [`README.md`](README.md) (architecture index), [`FLOW.md`](FLOW.md)
+> (end-to-end diagrams), [`platform/README.md`](platform/README.md) and
+> [`mcp/README.md`](mcp/README.md).
 
 ---
 
@@ -521,9 +528,9 @@ Discrepancies, sharp edges, and stale code observed during the dry run — each 
 - **F12 — In-memory dev has no seeded tenant users/roles.** On InMemory (no docker), `SeedTenantDataAsync` never runs, so `alpha-corp`/`beta-industries` have **no roles or users** until the platform superadmin invites someone (the first invite also triggers `EnsureTenantRolesAsync`). Not a bug, but easy to trip over when demoing locally without Postgres.
 - **F13 — Register page flash.** `inviteSeen` starts `false`, so the invite-only card/form states flash briefly before the `useEffect` reads the query string.
 - **F14 — JWT `role` claim is display-only but the UI trusts it.** The server authorizes by actions; the business portal uses the role claim for the header pill and the Team nav (F2). Since role names are tenant-editable, a renamed role would change the pill but not actual permissions — consistent, but the nav bug (F2) shows the cost of mixing the two sources.
-- **F15 — `apps/platform/Guide.md` is stale: its curl quick-test registers without an invite.** Guide step 4 does `POST /auth/register` with no `inviteToken` and claims "first user of gamma-corp becomes its Admin" — but registration is invite-only (B2), so that call returns 400 `"Registration failed."` today. The working sequence is: create envelope → create tenant → platform-invite → redeem the emailed link (as the doc's own InMemory section correctly says). `docs/ARCHITECTURE.md` §8 has a matching stale claim ("register page reads `?invite=` … to prefill email" — the page sets `inviteToken` + `tenantId`, **not** the email).
+- **F15 — `apps/platform/Guide.md` is stale: its curl quick-test registers without an invite.** Guide step 4 does `POST /auth/register` with no `inviteToken` and claims "first user of gamma-corp becomes its Admin" — but registration is invite-only (B2), so that call returns 400 `"Registration failed."` today. The working sequence is: create envelope → create tenant → platform-invite → redeem the emailed link (as the doc's own InMemory section correctly says). `docs/README.md` §8 has a matching stale claim ("register page reads `?invite=` … to prefill email" — the page sets `inviteToken` + `tenantId`, **not** the email).
 - **F16 — `docs/mcp.md` and `readme.md` reference projects that don't exist.** mcp.md §6's layout lists `Tessera.Platform.RateLimiting/` and §3.7/§2.5 call out "the existing `RateLimiting` module"; readme.md's scaffolding lists planned `Tessera.Platform.Auth/Authz/Billing/RateLimiting` class libraries. The solution has exactly **four** projects (Api, Domain, Observability, Tests — verified via `*.csproj` glob): rate limiting is implemented **inline in `Program.cs`**, and auth/authz live in the Api project's `Services/`. Relevant when planning MCP work against "the platform" — there is no separate module to slot into.
-- **F17 — `docs/ARCHITECTURE.md` drifts from the code in two places (its own rule says code wins).** (a) §5.3's middleware table lists `/ready` as exempt from `TenantValidationMiddleware` — the code's `ExcludedPaths` has only `/health, /openapi, /admin, /tenants`, so `/ready` without a header 400s (same root cause as F1); (b) §6.1/§6.3 say the superadmin token lasts **12 h** — the effective value is **4 h** (`Jwt:AdminAccessTokenExpirationHours` in appsettings.json; the 12 h figure is only `AdminAuthService`'s fallback default).
+- **F17 — `docs/README.md` drifts from the code in two places (its own rule says code wins).** (a) §5.3's middleware table lists `/ready` as exempt from `TenantValidationMiddleware` — the code's `ExcludedPaths` has only `/health, /openapi, /admin, /tenants`, so `/ready` without a header 400s (same root cause as F1); (b) §6.1/§6.3 say the superadmin token lasts **12 h** — the effective value is **4 h** (`Jwt:AdminAccessTokenExpirationHours` in appsettings.json; the 12 h figure is only `AdminAuthService`'s fallback default).
 - **F18 — Minor cosmetic/UX notes from the second pass.** (a) `apps/web` `Alert` supports `error|info|success`, the platform portal's `Alert` only `error|info` — harmless divergence; (b) `HealthBadge` calls `getHealth()` which still attaches `X-Tenant-Id: alpha-corp` (the default) to a path that's exempt — harmless; (c) the register page briefly renders one state before the `useEffect` reads the query string (F13).
 
 ---
@@ -669,7 +676,7 @@ Discrepancies, sharp edges, and stale code observed during the dry run — each 
 | `.gitignore` / `.dockerignore` | §1 (excludes bin/obj, .env, project-management in docker) |
 | `readme.md` | §22 note — scaffolding checklist (aspirational; F16 lists never-built class libs) |
 | `.claude/AGENTS.md` / `apps/web/AGENTS.md` | §22 note — agent rules (mentor-first workflow; Next.js-version warning block) |
-| `docs/ARCHITECTURE.md` | cross-checked throughout (**F17** — `/ready` exemption + 12 h claim drift) |
+| `docs/README.md` | cross-checked throughout (**F17** — `/ready` exemption + 12 h claim drift) |
 | `docs/TABLES.md` | §3 (schema reference) |
 | `docs/multitenant_mature.md` | §5, §17 (prod-readiness items B1–B4, C1–C6, E3–E6 referenced in code comments) |
 | `docs/mcp.md` | §22 note (**F16** — layout lists non-existent `Tessera.Platform.RateLimiting`) |

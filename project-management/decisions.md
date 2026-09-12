@@ -1,6 +1,6 @@
 # Tessera — Architecture Decisions
 
-> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together (data model, middleware pipeline, auth flows, API surface, gotchas).
+> 📐 **Architecture**: see **[`docs/README.md`](../docs/README.md)** — the single source of truth for how the system fits together (data model, middleware pipeline, auth flows, API surface, gotchas).
 
 ## Recorded Decisions
 

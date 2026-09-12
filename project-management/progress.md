@@ -1,8 +1,8 @@
 # Tessera — Project Progress
 
-> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
+> 📐 **Architecture**: see **[`docs/README.md`](../docs/README.md)** — the single source of truth for how the system fits together.
 
-> **Last updated**: 2026-08-13 (end of Session 10)
+> **Last updated**: 2026-09-12 (end of the MCP gateway milestone)
 > **Purpose**: Single source of truth for project state across sessions.
 > **How to use**: Start here every session. Read this file first, then open `tasks.md` for the checklist.
 
@@ -12,11 +12,9 @@
 
 | Item | Status |
 |------|--------|
-| **Current milestone** | Two portals (business + superadmin) with envelopes/roles/actions ✅ |
-| **Last completed step** | Full stack: superadmin auth + tenant/envelope/user management APIs, platform portal (apps/platform-portal), business portal Team page |
-| **Next step** | Choose next feature (Observability / CI pipeline)
-| **Build status** | ✅ Platform: `dotnet build` 0 errors · Web: `npm run build` + `npm run lint` pass |
-| **Docker status** | ⚠️ Not running this session — verified against InMemory API on `:5085` (`dotnet run`) |
+| **Current milestone** | MCP gateway + OAuth live end-to-end — Claude web operates the Acme Dental SMB ✅ |
+| **Last completed step** | Full MCP stack: C# OAuth AS (OpenIddict + CIMD) + gateway-facing manifest endpoint + Python MCP gateway + Caddy/tunnel orchestration || **Next step** | End-user (Jane) identity + per-tool scopes; then Observability (Phase 4) and CI (Phase 7) | **Build status** | ✅ Platform `dotnet build` 0 errors · C# tests 46/46 · Python tests 39/39 · both portals build/lint |
+| **Docker status** | ✅ Docker + Caddy + cloudflared verified; Claude web connector connected 2026-09-12 |
 | **Blockers** | None |
 
 ---
@@ -29,7 +27,7 @@
 | 🆔 Tenant Resolution | `X-Tenant-Id` header → Finbuckle resolves | ✅ Solid |
 | 🗄️ Data Isolation | `IsMultiTenant()` on ALL entities → global query filters | ✅ Solid |
 | 🔐 Token Isolation | `TenantClaimValidationMiddleware` → 403 on cross-tenant JWT reuse | ✅ Solid |
-| 👑 Permission Isolation | Role on User model → JWT role claims → `AdminOnly` policy | ✅ Solid |
+| 👑 Permission Isolation | Actions resolved live from the user's `TenantRole` → `ActionChecks`; `SuperAdminOnly` for `/admin/*` | ✅ Solid |
 
 ### Infrastructure
 - ✅ ASP.NET Core minimal API targeting .NET 10
@@ -43,7 +41,7 @@
 ### Authentication & Authorization
 - ✅ JWT with BCrypt password hashing, access + refresh token flow
 - ✅ Multi-tenant aware: same email works in different tenants
-- ✅ RBAC: `Admin` / `User` roles, `AdminOnly` policy, promote endpoint
+- ✅ Action-based authz: `ActionCatalog` actions enforced server-side via `ActionChecks` (role names are informational); `SuperAdminOnly` policy for `/admin/*`
 - ✅ Cross-tenant token reuse blocked (403)
 - ✅ Seed admin (`admin@tessera.com`) created via raw SQL on fresh PostgreSQL
 
@@ -174,6 +172,31 @@ Full test suite run against clean PostgreSQL database. All 18 tests passing:
 - All smoke-tested via curl: superadmin login/CRUD, envelope assignment, first-user-admin bootstrap, role validation, cross-tenant 403s, both portals return 200
 
 ---
+
+## 📋 What We Built This Session (Session 11) — MCP Gateway
+
+### Claude web operates the local SMB end-to-end ✅ (live-verified 2026-09-12)
+
+- **C# platform** — MCP OAuth authorization server on OpenIddict 7.7
+  (`/connect/authorize`, `/connect/token`, JSON login + MFA, consent, logout);
+  signed RS256 access tokens published at `/.well-known/jwks`; **CIMD client
+  registration** (`ClientIdMetadataService` + the discovery amendment advertising
+  `client_id_metadata_document_supported` and `none`); gateway-facing manifest
+  endpoint `GET /internal/gateway/manifests` (`X-Gateway-Api-Key`); `acme-dental`
+  tenant + 3 seeded tool manifests; **46/46 tests**.
+- **Python MCP gateway** (`apps/mcp-server`) — per-tenant low-level MCP `Server`,
+  stateless Streamable HTTP (2026-07-28), RFC 9728 PRM, `tools/list` from
+  TTL-cached manifests, `tools/call` through the HTTP executor (`${arg}`
+  templating, credential injection, JSONPath response mapping), RS256
+  `TokenVerifier` with per-tenant `aud` binding; **39/39 tests**.
+- **Web** — `/oauth/login` + `/oauth/consent` pages; `allowedDevOrigins` for
+  tunnel hosts; autofill-safe form submission (`FormData` at submit time).
+- **Ops** — `scripts/start-claude-web.sh` (one command: tunnel + docker stack +
+  portal + OAuth-surface verification); gateway + stub-backend services in
+  compose; Caddy single-origin routing (`/t/*` + PRM → gateway).
+- **Verified live:** discovery → CIMD → login/consent → PKCE token (correct
+  `iss`, `aud`, `scope`) → `tools/list` → `book_appointment` →
+  `list_appointments` → `cancel_appointment`, driven from claude.ai.
 
 ## ⚠️ Known Issues
 

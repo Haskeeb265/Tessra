@@ -1,6 +1,6 @@
 # Tessera — Learning Log
 
-> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)** — the single source of truth for how the system fits together.
+> 📐 **Architecture**: see **[`docs/README.md`](../docs/README.md)** — the single source of truth for how the system fits together.
 
 > Last updated: 2026-07-28 (end of Session 8)
 > 

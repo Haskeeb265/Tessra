@@ -1,6 +1,6 @@
 # Tessera — Architecture
 
-> **Last verified against the code**: 2026-09-08
+> **Last verified against the code**: 2026-09-12
 > **Read this first.** This document is the single source of truth for how the
 > system fits together. It's a router into the three sub-docs below — it carries
 > the cross-cutting overview (glossary, tech stack, middleware pipeline, isolation
@@ -12,6 +12,7 @@
 >   new `/oauth/*` login + consent pages.
 > - **`docs/mcp/README.md`** — the MCP product model, manifest contract, gateway design,
 >   auth contract, R&D sources, the Acme Dental sample SMB, local run.
+> - **`docs/FLOW.md`** — the end-to-end Mermaid diagrams of the whole system (overview + the platform, OAuth, gateway and web modules).
 > If something here disagrees with what you see in the code, the code is newer —
 > update this file (and the relevant sub-doc).
 
@@ -31,6 +32,10 @@ flowchart LR
     WEB -->|HTTP + X-Tenant-Id + JWT| API["Tessera.Platform.Api"]
     PP -->|HTTP + SuperAdmin JWT| API
     API --> DB[("PostgreSQL 16<br/>shared DB + tenant_id column")]
+    AI[AI assistant] -->|"MCP + Bearer token"| GW["apps/mcp-server · MCP gateway :8000"]
+    AI -.->|"OAuth 2.1 PKCE · login + consent"| API
+    GW -->|"manifests (server-to-server)"| API
+    GW -->|"tool calls"| SMB["SMB backend"]
 ```
 
 **Key rule**: the C# platform is the **source of truth** for auth, authz,
@@ -53,20 +58,28 @@ Tessera/
 ├── Directory.Build.props            # Shared MSBuild props (net10.0, Nullable, ImplicitUsings)
 ├── .dockerignore                    # Excludes bin/obj, project-management/, etc. from Docker builds
 ├── .gitignore                       # dotnet gitignore (+ .env)
-├── readme.md                        # Repo scaffolding checklist (roadmap for the repo itself)
+├── readme.md                        # Project README — what Tessera is, how to run and test it
 ├── docs/
 │   ├── README.md              # ← you are here (single source of truth; points at the three sub-docs below)
 │   ├── TABLES.md                    # database schema reference — every table, column, index
 │   ├── platform/README.md           # platform service engineering reference (C#: auth, data, middleware, endpoints, MCP OAuth AS, ops)
 │   ├── web/README.md                # web portals engineering reference (business + superadmin portals, OAuth pages)
-│   └── mcp/README.md                # MCP product model, architecture, auth contract, R&D, sample SMB, local run
+│   ├── mcp/README.md                # MCP product model, architecture, auth contract, R&D, sample SMB, local run
+│   ├── FLOW.md                      # end-to-end Mermaid diagrams (overview + per-module)
+│   ├── TABLES.md                    # database schema reference — every table, column, index
+│   ├── CONCERNS.md                  # concerns register (gaps, races, deferred decisions)
+│   ├── LIVE_TESTING_GUIDE.md        # wiring the gateway to a real AI assistant
+│   ├── USER_JOURNEYS.md             # dashboard actor flowcharts
+│   ├── CODE_DRY_RUN.md              # historical pre-MCP dry run
+│   └── progress.md                  # MCP gateway build log
 ├── project-management/              # roadmap · tasks · decisions · learning-log · progress
 ├── infra/                           # placeholder (cloud provisioning — not yet used)
-├── scripts/                         # placeholder (not yet used)
+├── scripts/                         # start-claude-web.sh (one-command live stack)
 ├── .claude/AGENTS.md                # Claude Code agent rules
 └── apps/
     ├── web/                         # Next.js 16 business (tenant) portal — :3000
     ├── platform-portal/             # Next.js 16 superadmin portal — :3001
+    ├── mcp-server/                  # Python MCP gateway (:8000) + Acme Dental stub backend (:9100)
     └── platform/                    # C# platform service (this doc's focus)
         ├── Dockerfile               # Multi-stage .NET 10 build (SDK → publish → aspnet runtime)
         ├── docker-compose.yml       # api (:5000) + PostgreSQL 16 (:5432), pgdata volume
@@ -118,7 +131,7 @@ These are the concepts that have caused confusion before. Get them right.
 | Database (prod/dev) | PostgreSQL | 16 (`postgres:16-alpine`) |
 | Database (fallback dev) | EF Core InMemory provider | 10.0.10 |
 | Frontends | Next.js (App Router, Turbopack) · React · TypeScript strict · Tailwind CSS v4 | 16.3.0 / 19.2.8 / 5 / 4 |
-| MCP gateway (target, not built yet) | Python (official MCP SDK v2 `mcp>=2`) | — |
+| MCP gateway (built) | Python 3.13 · official MCP SDK v2 (`mcp>=2`) · uvicorn · pydantic | `apps/mcp-server`, :8000 |
 
 ---
 
@@ -550,7 +563,7 @@ the AS and the OAuth cookie flows. Dashboard API calls still go to
 
 ```bash
 cd apps/platform
-docker compose up -d --build    # builds .NET image, starts api + db + caddy
+docker compose up -d --build    # api + db + caddy + mcp-gateway + stub-backend
 ```
 
 One-time host setup: add `127.0.0.1 tessera.local` to `/etc/hosts` (or
@@ -667,7 +680,7 @@ Read these before changing anything. Each one caused a real bug or confusion.
 - **MCP stack**: C# = system of record; Python = thin MCP gateway (protocol adapter only, no business logic, no direct DB access); Next.js = admin dashboard + end-user login/consent pages.
 - **MCP tool manifests**: `ToolManifests` is a tenant-scoped `IsMultiTenant()` entity; slots into existing action-based authz as `manage_tools`.
 - **MCP tenant addressing**: path-based v1 (`https://…/t/{tenant-slug}/mcp`).
-- **MCP OAuth AS**: OpenIddict 7.7 inside the C# host (build it ourselves — no hosted-AS fallback). Login/consent pages live in the Next.js portal. Access tokens are **signed RS256 JWTs** (JWS, `at+jwt`, kid `mcp-signing-v1`) published at `/.well-known/jwks` — live via `options.DisableAccessTokenEncryption()`; refresh tokens stay encrypted. CIMD client registration + Python `TokenVerifier` remain deferred.
+- **MCP OAuth AS**: OpenIddict 7.7 inside the C# host (build it ourselves — no hosted-AS fallback). Login/consent pages live in the Next.js portal. Access tokens are **signed RS256 JWTs** (JWS, `at+jwt`, kid `mcp-signing-v1`) published at `/.well-known/jwks` — live via `options.DisableAccessTokenEncryption()`; refresh tokens stay encrypted. CIMD client registration (`ClientIdMetadataService`) and the Python gateway `TokenVerifier` are both **built** and live-verified.
 - **MCP OAuth scopes**: coarse per-tenant `tools` + `offline_access` for v1.
 - **MCP credential vault**: v1 encrypted-at-rest DB columns (AES-GCM, env-var master key); KMS later.
 - **MCP gateway repo home**: `apps/mcp-server` (not `services/mcp-gateway` as earlier docs said).
@@ -678,8 +691,8 @@ Read these before changing anything. Each one caused a real bug or confusion.
 
 ## 16. Where to go next
 
-1. **MCP gateway core** (`apps/mcp-server`, not scaffolded yet) — manifest-driven tools + HTTP executor against the local Acme Dental stub; tested authless via MCP Inspector + Claude Code on localhost. See **[`docs/mcp/README.md`](mcp/README.md)** §16 (implementation phases) and §6 (target code structure).
-2. **MCP OAuth hardening** — CIMD client registration (fetch/cache client metadata, redirect-URI validation) + the Python gateway `TokenVerifier` (the AS already issues signed RS256 JWTs + serves `/.well-known/jwks`). See **[`docs/platform/README.md`](platform/README.md)** §6.5 and **[`docs/mcp/README.md`](mcp/README.md)** §8.
+1. **End-user (Jane) identity + per-tool scopes** — design the tool-execution authz plane: how a patient's identity maps to the SMB's records, and enforce manifest `required_scopes` instead of today's coarse per-tenant `tools` scope (CONCERNS §14). This is the biggest remaining product gap.
+2. **Manifest versioning vs authorization** — decide what happens to cached tool definitions, issued tokens, and recorded consent when a manifest changes or a tool is removed (CONCERNS §15).
 3. **Observability** (Phase 4) — correlation IDs across C#/TS, structured log conventions in `Tessera.Platform.Observability`.
 4. **CI pipeline** (Phase 7) — GitHub Actions split by path (ci-web / ci-platform / ci-infra).
 5. **Deploy** — Fly.io + PostgreSQL, secrets management, dev container, onboarding doc.
