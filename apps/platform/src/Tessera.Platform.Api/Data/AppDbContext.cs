@@ -23,12 +23,20 @@ public class AppDbContext : MultiTenantDbContext
     public DbSet<TenantRole> TenantRoles => Set<TenantRole>();
     public DbSet<Invitation> Invitations => Set<Invitation>();
 
+    // MCP tool manifests are tenant-scoped: each tenant owns its own tool
+    // definitions. The MCP gateway reads these (often through a cache) and
+    // exposes them to AI assistants on the tenant's MCP endpoint.
+    public DbSet<ToolManifest> ToolManifests => Set<ToolManifest>();
+
     // Platform-level entities (NOT multi-tenant): tenants, envelopes,
     // envelope roles, and superadmin accounts are owned by the platform.
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<Envelope> Envelopes => Set<Envelope>();
     public DbSet<AppRole> AppRoles => Set<AppRole>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+
+    // MCP OAuth connector grants (platform-level, see McpConsent doc).
+    public DbSet<McpConsent> McpConsents => Set<McpConsent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -154,6 +162,52 @@ public class AppDbContext : MultiTenantDbContext
 
             entity.IsMultiTenant();
         });
+
+        // Tool manifests: tenant-scoped MCP tool definitions.
+        modelBuilder.Entity<ToolManifest>(entity =>
+        {
+            entity.HasKey(m => m.Id);
+
+            entity.Property(m => m.ToolName)
+                .IsRequired()
+                .HasMaxLength(200);
+
+            entity.Property(m => m.Description)
+                .IsRequired()
+                .HasMaxLength(1000);
+
+            entity.Property(m => m.InputSchema)
+                .IsRequired();
+
+            entity.Property(m => m.Execution)
+                .IsRequired();
+
+            entity.Property(m => m.RateLimitOverride)
+                .HasMaxLength(500);
+
+            // Tool names must be unique per tenant ONLY among active
+            // manifests, so a soft-deleted manifest frees its name for
+            // re-use. EF Core cannot model filtered indexes, so the unique
+            // (TenantId, ToolName) index is created via raw SQL in the
+            // migration: IX_ToolManifests_TenantId_ToolName_OnlyActive
+            // WHERE NOT "IsDeleted". Uniqueness is also enforced in code
+            // (see ManifestEndpoints) so InMemory tests see the same rule.
+
+            entity.Property(m => m.RowVersion)
+                .HasColumnName("xmin")
+                .HasColumnType("xmin")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
+
+            entity.IsMultiTenant();
+        });
+
+        // Filtered unique index for tool manifests: tool names must be unique
+        // per tenant only among active manifests. This is done via raw SQL in
+        // the migration because EF Core does not model filtered indexes.
+        // modelBuilder.Entity<ToolManifest>()....HasIndex(...).IsUnique()...Filter(...) would be
+        // ideal but is not supported here; the migration already creates the
+        // required filtered index.
 
         // ============================================================
         // Tenant-Scoped Entities

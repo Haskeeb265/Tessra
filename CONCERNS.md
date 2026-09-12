@@ -191,9 +191,9 @@ I'd prefer immutable tenant identifiers anyway. Treat them like slugs/keys, not 
 
 4. 🔴 The database model contradicts itself about foreign keys
 
-This is worth fixing before the MCP layer grows.
+> ⚠️ **DEFERRED — revisit after MCP implementation.** See note below.
 
-Your architecture diagrams describe:
+The architecture diagrams describe:
 
 User.RoleId → TenantRole
 Invitation.RoleId → TenantRole
@@ -236,17 +236,25 @@ You already manually protect role deletion while users are assigned.
 
 That's a symptom of the database not enforcing the relationship.
 
-I'd make the documentation brutally explicit:
+### Current relationship matrix (explicit — as of 2026-08-31)
 
-Relationship	Logical	DB FK
-User → Tenant	yes	no
-Role → Tenant	yes	no
-Widget → Tenant	yes	no
-RefreshToken → User	yes	?
-User → TenantRole	yes	?
-Invitation → TenantRole	yes	?
+| Relationship | Logical | DB FK | Enforced by |
+|---|---|---|---|
+| User → Tenant | yes | no | Finbuckle query filter |
+| TenantRole → Tenant | yes | no | Finbuckle query filter |
+| Widget → Tenant | yes | no | Finbuckle query filter |
+| RefreshToken → Tenant | yes | no | Finbuckle query filter |
+| Invitation → Tenant | yes | no | Finbuckle query filter |
+| User → TenantRole | yes | no | Application: blocked delete while assigned |
+| Invitation → TenantRole | yes | no | Application: validates role exists on redemption |
+| RefreshToken → User | yes | no | Application: cascade on user delete |
+| AppRole → Envelope | yes | **yes** | DB FK with cascade delete |
 
-Then decide deliberately.
+### Why this is deferred
+
+Designing the FK strategy now means designing it twice — once for the current 9 tables, then again when MCP adds `ToolManifests`, `OAuthClients`, `Credentials`, etc. Better to wait until the full entity graph is known (post-MCP) and design a coherent strategy that covers everything at once.
+
+**Action for AI assistant:** When MCP implementation begins, revisit this section. Design FK constraints for the complete entity graph (existing + MCP tables). Update this matrix with the final decisions.
 
 5. 🔴 Tenant deletion is not fully atomic
 

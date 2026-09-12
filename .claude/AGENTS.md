@@ -350,6 +350,20 @@ Update this whenever a milestone is completed.
 
 ---
 
+# Deferred Decisions (AI Memory)
+
+These are architectural decisions intentionally deferred. **Do not forget them.**
+
+## FK Strategy — DEFERRED until post-MCP implementation
+
+**Location:** CONCERNS.md §4
+**Decision:** Design foreign key constraints for the complete entity graph (existing 9 tables + MCP tables) after MCP is built, not before.
+**Why:** Adding FKs now means designing them twice. Wait until the full entity graph is known.
+**Current state:** All tenant-scoped FKs are logical only (no DB enforcement). Application manually guards relationships. Only `AppRole → Envelope` has a real DB FK (cascade delete).
+**Action:** When starting MCP, revisit CONCERNS.md §4. Design FKs for the complete schema. Update the relationship matrix.
+
+---
+
 # Staying On Track
 
 Do not lose sight of the project's goals.

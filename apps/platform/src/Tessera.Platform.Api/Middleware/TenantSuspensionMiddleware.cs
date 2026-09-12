@@ -14,13 +14,22 @@ namespace Tessera.Platform.Api.Middleware;
 /// </summary>
 public class TenantSuspensionMiddleware
 {
+    // /connect + /.well-known (MCP OAuth) are tenant-independent at the
+    // transport level: tenant suspension is enforced inside the OAuth
+    // handlers themselves (they resolve the tenant from the resource
+    // parameter), so they are excluded here like /admin etc.
     private static readonly PathString[] ExcludedPaths =
     [
         "/health",
         "/ready",
         "/openapi",
         "/admin",
-        "/tenants"
+        "/tenants",
+        "/connect",
+        "/.well-known",
+        // Server-to-server surface: the gateway endpoint checks suspension
+        // itself (it resolves the tenant from its own parameters).
+        "/internal"
     ];
 
     private readonly RequestDelegate _next;

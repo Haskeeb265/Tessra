@@ -1,3 +1,14 @@
+# Full local stack, including the MCP OAuth surface for Claude web.
+#
+# ORIGIN is the single public origin everything is addressed by (see
+# caddy/Caddyfile). It must equal the hostname clients actually reach —
+# otherwise the discovery document's `issuer` won't match its own
+# endpoints and the OAuth flow fails. Start the tunnel first, then either run
+# `scripts/start-claude-web.sh` (writes .env for you) or set it manually:
+#
+#   echo "ORIGIN=https://<your>.trycloudflare.com" > .env
+#   docker compose up -d --build
+#
 services:
   api:
     build:
@@ -11,9 +22,70 @@ services:
       - ConnectionStrings__DefaultConnection=Host=db;Database=tessera_platform;Username=postgres;Password=postgres
       # Dev-only signing key; production must set Jwt__SecretKey from a secrets manager.
       - Jwt__SecretKey=Tessera-Docker-Secret-Key-Min-32-Chars!!
+      # MCP OAuth (docs/mcp/README.md §8): public issuer + portal origin behind
+      # the Caddy proxy; signing/encryption keys persist in a mounted volume.
+      - McpOAuth__Issuer=${ORIGIN:-https://tessera.local}
+      - McpOAuth__PortalBaseUrl=${ORIGIN:-https://tessera.local}
+      - McpOAuth__McpBaseUrl=${ORIGIN:-https://tessera.local}
+      - McpOAuth__KeyDirectory=/app/keys
+    volumes:
+      - oauth-keys:/app/keys
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Manifest-driven, tenant-aware MCP server (apps/mcp-server).
+  mcp-gateway:
+    build:
+      context: ../mcp-server
+    environment:
+      # Manifest reads are server-to-server on the internal network (no TLS hop).
+      PLATFORM_API_URL: http://api:8080
+      GATEWAY_API_KEY: dev-gateway-key
+      # Public addressing: the RFC 8707 resource clients connect to, and the
+      # authorization server they must obtain tokens from. Both are the same
+      # origin, so the token audience matches the resource exactly.
+      MCP_BASE_URL: ${ORIGIN:-https://tessera.local}
+      ISSUER_URL: ${ORIGIN:-https://tessera.local}
+      # Fetch the AS signing keys over the internal hop rather than looping
+      # back out through the public origin.
+      JWKS_URL: http://api:8080/.well-known/jwks
+      MCP_AUTH_MODE: oauth
+      # Point the fixture backend's calls at the stub container.
+      SMB_HOST_OVERRIDES: '{"api.acmedental.test":"http://stub-backend:9100"}'
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Local stand-in for the Acme Dental booking API (fixture only).
+  stub-backend:
+    build:
+      context: ../mcp-server
+    command:
+      - uvicorn
+      - stub_backend.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9100"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    extra_hosts:
+      # Lets Caddy reach the Next.js portal running on the host.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - mcp-gateway
     restart: unless-stopped
 
   db:
@@ -35,3 +107,6 @@ services:
 
 volumes:
   pgdata:
+  oauth-keys:
+  caddy-data:
+  caddy-config:

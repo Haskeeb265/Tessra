@@ -25,15 +25,25 @@ public class TenantValidationMiddleware
     // These endpoints do not require a tenant context:
     //
     // /health  → Public health checks
+    // /ready   → Public readiness check (must not require tenant header)
     // /openapi → OpenAPI documentation
     // /admin   → Platform-level superadmin endpoints
-    // /tenants  → Public tenant/workspace lookup
+    // /tenants → Public tenant/workspace lookup
+    // /connect + /.well-known → MCP OAuth endpoints (tenant is carried by
+    //   the RFC 8707 resource parameter, never by the header — see
+    //   docs/mcp-auth-platform.md)
+    // /internal → server-to-server endpoints (the MCP gateway resolves the
+    //   tenant from its own parameters, not from a caller-provided header)
     private static readonly PathString[] ExcludedPaths =
     [
         "/health",
+        "/ready",
         "/openapi",
         "/admin",
-        "/tenants"
+        "/tenants",
+        "/connect",
+        "/.well-known",
+        "/internal"
     ];
 
     public TenantValidationMiddleware(RequestDelegate next)

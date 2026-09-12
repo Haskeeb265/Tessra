@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Security.Claims;
 using System.Text;
 
@@ -9,16 +10,23 @@ using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
 
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Threading.RateLimiting;
 
 using Tessera.Platform.Api.Data;
 using Tessera.Platform.Api.Endpoints;
+using Tessera.Platform.Api.McpOAuth;
 using Tessera.Platform.Api.Middleware;
 using Tessera.Platform.Api.Services;
 using Tessera.Platform.Domain.Models;
 using Tessera.Platform.Observability.Middleware;
+
+using OpenIddict.Abstractions;
+using OpenIddict.Server;
+
+using static OpenIddict.Abstractions.OpenIddictConstants;
 
 // ============================================================
 // Logging Bootstrap
@@ -74,6 +82,30 @@ try
         }
     });
 
+    // OpenIddict's store context (applications, authorizations, scopes and
+    // tokens). In OpenIddict 7.7 the EF Core stores are wired with
+    // UseDbContext<T>() (see the AddOpenIddict() block below), and that
+    // overload requires the context to be registered here. Provider choice
+    // mirrors AppDbContext: PostgreSQL when configured, InMemory otherwise.
+    builder.Services.AddDbContext<OpenIddictDbContext>(options =>
+    {
+        var connectionString = builder.Configuration
+            .GetConnectionString("DefaultConnection");
+
+        if (!string.IsNullOrEmpty(connectionString))
+        {
+            options.UseNpgsql(connectionString);
+        }
+        else
+        {
+            // Distinct name from AppDbContext so the two contexts never
+            // share an InMemory store (and each test factory stays isolated).
+            options.UseInMemoryDatabase(
+                (builder.Configuration["Database:InMemoryName"]
+                 ?? "TesseraPlatformDb") + "-OpenIddict");
+        }
+    });
+
     // ============================================================
     // Authentication & Authorization
     // ============================================================
@@ -83,7 +115,35 @@ try
         options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
         options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
     })
-    .AddJwtBearer();
+    .AddJwtBearer()
+    // Interactive cookie for the MCP authorization-code flow: /connect/login
+    // signs it, /connect/authorize reads it. Registered under an explicit
+    // scheme name so it never becomes the default scheme for the API.
+    .AddCookie(McpOAuthConstants.CookieScheme, options =>
+    {
+        options.Cookie.Name = McpOAuthConstants.CookieName;
+        options.Cookie.HttpOnly = true;
+        // Lax (not Strict) so the cookie survives the redirect back from the
+        // OAuth provider in the same site.
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.SlidingExpiration = false;
+        options.ExpireTimeSpan =
+            McpOAuthConfig.CookieLifetime(builder.Configuration);
+
+        // The flow drives authentication explicitly, so a 401/403 must never
+        // turn into a redirect to a login page.
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+    });
 
     // Configure the bearer validation parameters lazily from the final
     // configuration (host config is merged only after Program's top-level
@@ -143,6 +203,11 @@ try
     // ============================================================
 
     builder.Services.AddHttpContextAccessor();
+
+    // HttpClient infrastructure. ClientIdMetadataService fetches CIMD client
+    // metadata documents over HTTP, so the factory must be registered.
+    builder.Services.AddHttpClient();
+
     builder.Services.AddScoped<AuthService>();
     builder.Services.AddScoped<AdminAuthService>();
 
@@ -221,7 +286,160 @@ try
         });
     });
 
+    // ============================================================
+    // MCP OAuth Authorization Server (OpenIddict)
+    // ============================================================
+
+    // Register McpOAuthService (interactive login, cookie, consent, token
+    // endpoint helpers) so the McpOAuthEndpoints handlers can inject it.
+    builder.Services.AddScoped<McpOAuthService>();
+
+    // Register the CIMD client-metadata service so the authorize handler can
+    // fetch + validate + upsert clients whose client_id is an HTTPS URL.
+    builder.Services.AddScoped<ClientIdMetadataService>();
+
+    // Key material is loaded once and shared by the OpenIddict server config
+    // below and the /.well-known/jwks endpoint further down. Loading it twice
+    // (or with a null IConfiguration) would silently publish a different key
+    // than the one signing tokens.
+    var (signingKey, encryptionKey) = McpOAuthKeys.Load(builder.Configuration);
+
+    // OpenIddict serves the MCP OAuth surface (docs/mcp/README.md §8).
+    builder.Services.AddOpenIddict()
+        // Persist applications, authorizations, scopes and tokens in EF Core.
+        // OpenIddict 7.7 registers the stores through
+        // AddCore → UseEntityFrameworkCore → UseDbContext<T>(); the older
+        // AddEntityFrameworkCoreStores<T>() convenience overload is gone.
+        .AddCore(core =>
+        {
+            core.UseEntityFrameworkCore()
+                .UseDbContext<OpenIddictDbContext>();
+        })
+        .AddServer(options =>
+        {
+            // Endpoints are relative; the issuer is absolute and shared by all
+            // tenants (the RFC 8707 resource/audience distinguishes them).
+            var issuer = McpOAuthConfig.Issuer(builder.Configuration);
+
+            // These MUST stay relative. OpenIddict matches an inbound request
+            // against the configured endpoint URIs, so an absolute URI only
+            // matches when the scheme+host line up too — behind Caddy the
+            // request arrives as http://<tunnel>/..., which never matches
+            // https://<tunnel>/... and the passthrough handler then throws
+            // "The OpenID Connect request cannot be retrieved". The public
+            // https URLs are produced from the forwarded headers trusted below.
+            options.SetIssuer(issuer)
+                   .SetAuthorizationEndpointUris("connect/authorize")
+                   .SetTokenEndpointUris("connect/token")
+                   .SetJsonWebKeySetEndpointUris(".well-known/jwks");
+
+            options.AllowAuthorizationCodeFlow()
+                   .AllowRefreshTokenFlow()
+                   .RequireProofKeyForCodeExchange();
+
+            // MCP clients (Claude web, Desktop, mobile) authenticate to the
+            // token endpoint as public clients: PKCE, no client secret, and
+            // token_endpoint_auth_method = "none". AcceptAnonymousClients()
+            // makes the server accept token requests without a client_id/
+            // client secret — the OAuth 2.1 "none" auth method. This is the
+            // signal MCP hosts check before sending a CIMD client_id URL.
+            options.AcceptAnonymousClients();
+
+            // Coarse v1 scopes: access this workspace's tools, stay signed in.
+            options.RegisterScopes(
+                McpOAuthConstants.ScopeTools, Scopes.OfflineAccess);
+
+            // Signed-only RS256 access tokens so the Python gateway validates
+            // them from the public JWKS alone; refresh tokens stay encrypted.
+            options.DisableAccessTokenEncryption();
+
+            // Strict single-use refresh-token rotation (no reuse grace).
+            options.SetRefreshTokenReuseLeeway(TimeSpan.Zero);
+
+            // Every tenant has its own MCP endpoint, so OpenIddict's static
+            // audience/resource permission checks cannot apply — tenant binding
+            // is enforced by McpOAuthService and, later, the gateway.
+            options.DisableResourceValidation();
+            options.IgnoreAudiencePermissions();
+            options.IgnoreResourcePermissions();
+
+            // RS256 signing + AES encryption keys (loaded above). Persisted
+            // under McpOAuth:KeyDirectory when configured, ephemeral otherwise.
+            options.AddSigningKey(signingKey);
+            options.AddEncryptionKey(encryptionKey);
+
+            // CIMD: register a client whose client_id is an HTTPS URL before
+            // the built-in client lookup runs (see CimdAuthorizationRequestHandler).
+            options.AddEventHandler<
+                OpenIddictServerEvents.ValidateAuthorizationRequestContext>(
+                handler => handler
+                    .UseScopedHandler<CimdAuthorizationRequestHandler>()
+                    .SetOrder(int.MinValue + 10_000));
+
+            // MCP hosts decide whether they may use "URL client ids" (CIMD)
+            // by reading the discovery document, so advertise the two flags
+            // OpenIddict 7.7 does not derive from its own configuration:
+            //   - client_id_metadata_document_supported, and
+            //   - "none" among token_endpoint_auth_methods_supported.
+            // Without these, a host like Claude web silently falls back to a
+            // non-CIMD client id and the authorize request is rejected as
+            // invalid_client. Runs last so it amends the built-in payload.
+            options.AddEventHandler<
+                OpenIddictServerEvents.ApplyConfigurationResponseContext>(
+                handler => handler
+                    .UseInlineHandler(context =>
+                    {
+                        context.Response[
+                            "client_id_metadata_document_supported"] = true;
+
+                        context.Response[
+                            "token_endpoint_auth_methods_supported"] =
+                            ImmutableArray.Create(
+                                // Public clients (PKCE, no secret) — MCP hosts.
+                                ClientAuthenticationMethods.None,
+                                ClientAuthenticationMethods.ClientSecretPost,
+                                ClientAuthenticationMethods.ClientSecretBasic,
+                                ClientAuthenticationMethods.PrivateKeyJwt);
+
+                        return default;
+                    })
+                    .SetOrder(10_000));
+
+            var aspNetCore = options.UseAspNetCore()
+                .EnableAuthorizationEndpointPassthrough()
+                .EnableTokenEndpointPassthrough();
+
+
+
+            // Tests and plain-HTTP local dev run without TLS; in production the
+            // API sits behind Caddy, whose forwarded headers are trusted, so the
+            // transport-security requirement stays enforced.
+            if (!builder.Environment.IsProduction())
+            {
+                aspNetCore.DisableTransportSecurityRequirement();
+            }
+        });
+
     builder.Services.AddOpenApi();
+
+    // TLS is terminated at Caddy (and, for Claude web, the cloudflared
+    // tunnel), so this process only ever sees plain HTTP. Without trusting
+    // the forwarded scheme/host the request base URI is http://<tunnel>/...
+    // and every URL OpenIddict advertises (discovery, jwks_uri) comes out
+    // with the wrong scheme. Caddy forces X-Forwarded-Proto: https; see
+    // apps/platform/caddy/Caddyfile.
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders =
+            ForwardedHeaders.XForwardedFor |
+            ForwardedHeaders.XForwardedHost |
+            ForwardedHeaders.XForwardedProto;
+
+        // Caddy is the only ingress and its address is not stable inside the
+        // compose network, so all immediate upstreams are trusted.
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+    });
 
     // ============================================================
     // Request Pipeline
@@ -229,12 +447,45 @@ try
 
     var app = builder.Build();
 
+    // Must run before anything reads the request scheme/host (routing,
+    // OpenIddict, redirect helpers).
+    app.UseForwardedHeaders();
+
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();
     }
 
     app.UseHttpsRedirection();
+
+    // Serve the JWKS at /.well-known/jwks before tenant middleware so it's
+    // always reachable (docs/mcp/README.md §2.6).
+    // Closes over the signingKey already loaded at startup — no reload, no
+    // config mismatch (Load(null!) would silently switch to an ephemeral key).
+    app.Use(async (context, next) =>
+    {
+        if (context.Request.Path == "/.well-known/jwks")
+        {
+            try
+            {
+                var jwksDoc = McpOAuthKeys.GetJwksDocument(signingKey);
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsJsonAsync(jwksDoc);
+            }
+            catch (Exception ex)
+            {
+                // Surface the real failure — the global exception handler
+                // returns a bare 500 with no detail (docs/mcp/README.md §2.6).
+                Console.WriteLine($"[JWKS] Export failed: {ex}");
+                context.Response.StatusCode = 500;
+                await context.Response.WriteAsJsonAsync(
+                    new { error = "jwks_unavailable", detail = ex.Message });
+            }
+
+            return;
+        }
+        await next();
+    });
 
     // Global exception handling must be registered before other middleware
     // so it can catch exceptions from everything downstream.
@@ -247,6 +498,7 @@ try
     app.UseCors("WebApp");
 
     app.UseRateLimiter();
+
 
     // Validate X-Tenant-Id header before tenant resolution.
     app.UseMiddleware<TenantValidationMiddleware>();
@@ -273,6 +525,13 @@ try
     // ============================================================
     // Endpoints
     // ============================================================
+
+    // MCP OAuth authorization server surface (connect/*) + CIMD client
+    // registration. These endpoints are platform-level, not tenant-scoped, so
+    // they must be mapped before UseMultiTenant in the pipeline enforces
+    // X-Tenant-Id. Added here so OAuth handlers resolve after all other
+    // services are registered.
+    app.MapMcpOAuthEndpoints();
 
     // Liveness: the process is up. (Readiness: /ready below.)
     app.MapGet(
@@ -316,7 +575,11 @@ try
     app.MapWidgetEndpoints();
     app.MapAuthEndpoints();
     app.MapTenantEndpoints();
+    app.MapManifestEndpoints();
     app.MapAdminEndpoints();
+
+    // Server-to-server surface the Python MCP gateway calls (API-key auth).
+    app.MapGatewayEndpoints();
 
     // ============================================================
     // Database Seeding
@@ -340,13 +603,72 @@ try
 
         await SeedPlatformDataAsync(db, app.Configuration);
 
+        // Acme Dental fixture: the tenant's three sample tool manifests
+        // (seeded on both the InMemory and PostgreSQL providers).
+        await SampleSmbSeeder.SeedAcmeDentalAsync(db, scope.ServiceProvider);
+
         if (db.Database.IsRelational())
         {
             await SeedTenantDataAsync(db, app.Configuration);
         }
+
+        // The OpenIddict store context has its own migration history table.
+        var openIddictDb = scope.ServiceProvider
+            .GetRequiredService<OpenIddictDbContext>();
+
+        if (openIddictDb.Database.IsRelational() &&
+            app.Configuration.GetValue<bool>("Database:AutoMigrate"))
+        {
+            openIddictDb.Database.Migrate();
+        }
+
+        await SeedMcpOAuthApplicationsAsync(scope.ServiceProvider);
     }
 
     app.Run();
+
+    // ================================================================
+    // Seeds the pre-registered MCP OAuth client. Real MCP hosts (Claude web,
+    // Desktop, mobile) register themselves through CIMD, but the scripted PKCE
+    // harness and MCP Inspector use a fixed loopback client.
+    // ================================================================
+    static async Task SeedMcpOAuthApplicationsAsync(IServiceProvider services)
+    {
+        var applications = services
+            .GetRequiredService<IOpenIddictApplicationManager>();
+
+        if (await applications.FindByClientIdAsync(
+                McpOAuthConstants.LocalDevClientId) is not null)
+        {
+            return;
+        }
+
+        var descriptor = new OpenIddictApplicationDescriptor
+        {
+            ClientId = McpOAuthConstants.LocalDevClientId,
+            DisplayName = "Tessera local dev",
+            // Public client: PKCE, no client secret (OAuth 2.1 §2.1).
+            ClientType = ClientTypes.Public,
+            // The portal owns the consent UI; this only marks the app as
+            // requiring an explicit grant before tokens are issued.
+            ConsentType = ConsentTypes.Explicit
+        };
+
+        descriptor.RedirectUris.Add(
+            new Uri(McpOAuthConstants.LocalDevRedirectUri));
+
+        descriptor.Permissions.Add(Permissions.Endpoints.Authorization);
+        descriptor.Permissions.Add(Permissions.Endpoints.Token);
+        descriptor.Permissions.Add(Permissions.GrantTypes.AuthorizationCode);
+        descriptor.Permissions.Add(Permissions.GrantTypes.RefreshToken);
+        descriptor.Permissions.Add(Permissions.ResponseTypes.Code);
+        descriptor.Permissions.Add(
+            Permissions.Prefixes.Scope + McpOAuthConstants.ScopeTools);
+        descriptor.Permissions.Add(
+            Permissions.Prefixes.Scope + Scopes.OfflineAccess);
+
+        await applications.CreateAsync(descriptor);
+    }
 
     // ================================================================
     // Seeds platform-level data (not tenant-scoped) so both the in-memory
@@ -420,6 +742,14 @@ try
                     Id = "beta",
                     Identifier = "beta-industries",
                     Name = "Beta Industries",
+                    EnvelopeId = standard?.Id
+                },
+                // The Acme Dental sample SMB fixture (docs/mcp/README.md §14).
+                new Tenant
+                {
+                    Id = SampleSmbSeeder.AcmeDentalTenantId,
+                    Identifier = SampleSmbSeeder.AcmeDentalTenantId,
+                    Name = "Acme Dental",
                     EnvelopeId = standard?.Id
                 });
             await db.SaveChangesAsync();

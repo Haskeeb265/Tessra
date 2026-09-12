@@ -1,11 +1,13 @@
 # Tessera — Database Tables
 
-> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](ARCHITECTURE.md)** — the single source of truth for how the system fits together. This file is a focused reference for the database schema (PostgreSQL, database `tessera_platform`).
+> 📐 **Architecture**: see **[`docs/README.md`](README.md)** — the single source of truth for how the system fits together. This file is a focused reference for the database schema (PostgreSQL, database `tessera_platform`).
 
-The schema has **9 application tables** plus EF Core's `__EFMigrationsHistory` bookkeeping table. They split into two groups:
+The main `AppDbContext` schema has **11 application tables** plus EF Core's `__EFMigrationsHistory` bookkeeping table. They split into two groups (each context below has its own `__EFMigrationsHistory`):
 
-- **Platform-level** (not tenant-scoped, no `TenantId`): `Tenants`, `Envelopes`, `AppRoles`, `AdminUsers`
-- **Tenant-scoped** (marked `IsMultiTenant()` → Finbuckle adds a `TenantId` column + global query filter): `Widgets`, `Users`, `RefreshTokens`, `TenantRoles`, `Invitations`
+- **Platform-level** (not tenant-scoped, no `TenantId`): `Tenants`, `Envelopes`, `AppRoles`, `AdminUsers`, `McpConsents`
+- **Tenant-scoped** (marked `IsMultiTenant()` → Finbuckle adds a `TenantId` column + global query filter): `Widgets`, `Users`, `RefreshTokens`, `TenantRoles`, `Invitations`, `ToolManifests`
+
+On top of these, the **OpenIddict store** lives in a separate, deliberately non-tenant `OpenIddictDbContext` with four tables of its own: `OpenIddictApplications`, `OpenIddictAuthorizations`, `OpenIddictTokens`, `OpenIddictScopes` (never Finbuckle-filtered — MCP tokens are tenant-bound via their claims/audience, not a `TenantId` column).
 
 ```mermaid
 erDiagram
@@ -19,6 +21,14 @@ erDiagram
     User ||--o{ RefreshToken : "issued to"
     Tenant ||--o{ Invitation : "sent"
     Invitation }o--|| TenantRole : "grants"
+    Tenant ||--o{ ToolManifest : "owns"
+    McpConsent {
+        guid Id PK
+        guid UserId "the tenant-scoped User who granted"
+        string TenantId "denormalized"
+        string ClientId "OpenIddict application"
+        string ScopesJson "granted scopes, JSON array"
+    }
 ```
 
 ---
@@ -27,7 +37,7 @@ erDiagram
 
 ### `Tenants`
 
-A workspace/company using the platform. Doubles as the Finbuckle `ITenantInfo` (see ARCHITECTURE.md §3). Serves as the Finbuckle tenant store via `DbTenantStore`.
+A workspace/company using the platform. Doubles as the Finbuckle `ITenantInfo` (see `docs/README.md` §3). Serves as the Finbuckle tenant store via `DbTenantStore`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -65,13 +75,13 @@ A role **inside an envelope** (the template). The `Actions` column lists the Tes
 | `Id` | uuid | **PK** |
 | `EnvelopeId` | uuid | **FK** → `Envelopes.Id`, cascade delete |
 | `Name` | varchar(100) | unique per envelope (`EnvelopeId` + `Name`) |
-| `Actions` | text[] | action catalog: `view_widgets`, `create_widget`, `edit_widget`, `delete_widget`, `manage_users` |
+| `Actions` | text[] | action catalog: `view_widgets`, `create_widget`, `edit_widget`, `delete_widget`, `manage_users`, `manage_tools` |
 
 **Indexes / constraints:** `IX_AppRoles_EnvelopeId_Name` (unique on `{EnvelopeId, Name}`) · `FK_AppRoles_Envelopes_EnvelopeId` (cascade delete).
 
 ### `AdminUsers`
 
-Platform-level superadmin accounts (no tenant binding). Authenticate via `/admin/auth/login` — different table from tenant `Users` (see ARCHITECTURE.md §6).
+Platform-level superadmin accounts (no tenant binding). Authenticate via `/admin/auth/login` — different table from tenant `Users` (see `docs/README.md` §6).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -88,7 +98,7 @@ Platform-level superadmin accounts (no tenant binding). Authenticate via `/admin
 
 ### `Widgets`
 
-The **placeholder demo resource** — a "todo" equivalent used to prove tenant isolation, auth, and RBAC work end-to-end. Not a product feature (see ARCHITECTURE.md §3).
+The **placeholder demo resource** — a "todo" equivalent used to prove tenant isolation, auth, and RBAC work end-to-end. Not a product feature (see `docs/README.md` §3).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -157,6 +167,41 @@ The tenant's **own** role set — copied from the assigned envelope template at 
 
 **Indexes / constraints:** `IX_TenantRoles_TenantId_Name` (unique on `{TenantId, Name}`).
 
+### `ToolManifests`
+
+MCP tool manifests — the contract the MCP gateway validates and executes against. Tenant-scoped (each tenant owns its own tool definitions); managed through `/tenant/manifests` CRUD, gated by the `manage_tools` action.
+
+| Column | Type | Notes |
+|---|---|---|
+| `Id` | uuid | **PK** |
+| `TenantId` | text | set by Finbuckle — global query filter |
+| `ToolName` | varchar(200) | lowercase letters/digits/underscores only; unique per tenant **among active manifests** |
+| `Description` | varchar(1000) | human-readable tool description |
+| `InputSchema` | text | JSON Schema (2020-12-compatible) stored as JSON text |
+| `Execution` | text | JSON object — how the tool executes (`{ type, method, url, auth, body_template, response_mapping, … }`) |
+| `RequiredScopes` | text[] | per-tool scope strings (aspirational — v1 uses coarse per-tenant `tools`) |
+| `RateLimitOverride` | varchar(500) | nullable per-tool rate-limit override |
+| `IsDeleted` | boolean | soft delete — freed tool names are reusable |
+| `xmin` | xid (system) | Postgres rowversion — optimistic concurrency |
+| `CreatedAt` | timestamptz | |
+
+**Indexes:** `IX_ToolManifests_TenantId_ToolName_OnlyActive` — **filtered unique** on `{TenantId, ToolName}` `WHERE NOT "IsDeleted"` (created via raw SQL in the migration; EF Core can't model filtered indexes, so uniqueness is also enforced in code).
+
+### `McpConsents` (platform-level, MCP-specific)
+
+A user's grant to let an MCP OAuth client act on their behalf within one tenant (the "connector consent"). Platform-level entity (not Finbuckle-filtered): the `(UserId, ClientId)` pair implies the tenant because users are tenant-scoped.
+
+| Column | Type | Notes |
+|---|---|---|
+| `Id` | uuid | **PK** |
+| `UserId` | uuid | the tenant-scoped `User` row that granted consent |
+| `TenantId` | text | denormalized copy (display/revocation queries) |
+| `TenantIdentifier` | varchar(200) | denormalized tenant slug |
+| `ClientId` | varchar | OpenIddict application `client_id` |
+| `ScopesJson` | text | granted scopes as a JSON array, e.g. `["tools","offline_access"]` |
+| `GrantedAt` | timestamptz | |
+| `RevokedAt` | timestamptz | nullable — set when the user revokes the connector (no UI yet) |
+
 ### `Invitations`
 
 Role-bound invitations for onboarding (B2). Redeemed once via `/auth/register` with the invite token.
@@ -176,16 +221,34 @@ Role-bound invitations for onboarding (B2). Redeemed once via `/auth/register` w
 
 ---
 
+## OpenIddict store tables (`OpenIddictDbContext` — separate, non-tenant context)
+
+| Table | Notes |
+|---|---|
+| `OpenIddictApplications` | OAuth client registrations (e.g. pre-registered dev client `tessera-local-dev`) |
+| `OpenIddictAuthorizations` | granted authorizations (subject + application + scopes) |
+| `OpenIddictTokens` | authorization codes, access tokens, refresh tokens (server-side records) |
+| `OpenIddictScopes` | registered scopes (`tools`, `offline_access`) |
+
+These back OpenIddict's EF Core store (see `docs/platform/README.md` §7.4). Migration: `OpenIddict/20260907104127_AddOpenIddict`.
+
+---
+
 ## EF Core bookkeeping
 
 ### `__EFMigrationsHistory`
 
-Created and managed by EF Core — records which migrations have been applied. Not an application table; don't modify it by hand.
+Created and managed by EF Core — records which migrations have been applied (one per context). Not an application table; don't modify it by hand.
 
 ---
 
 ## Migration history
 
-| Migration | Adds |
-|---|---|
-| `20260817035321_InitialCreate` | The full current schema in one shot (development history was squashed): `AdminUsers`, `Envelopes`, `AppRoles`, `Tenants`, `TenantRoles` (incl. `IsSystem`), `Users` (incl. `RoleId`/`TokenVersion`/soft-delete/email-verify/MFA/`xmin`), `RefreshTokens` (incl. `FamilyId`), `Invitations`, `Widgets`; filtered unique `(Email, TenantId) WHERE NOT IsDeleted` index |
+| Context | Migration | Adds |
+|---|---|---|
+| `AppDbContext` | `20260817035321_InitialCreate` | The base schema in one shot (development history was squashed): `AdminUsers`, `Envelopes`, `AppRoles`, `Tenants`, `TenantRoles` (incl. `IsSystem`), `Users` (incl. `RoleId`/`TokenVersion`/soft-delete/email-verify/MFA/`xmin`), `RefreshTokens` (incl. `FamilyId`), `Invitations`, `Widgets`; filtered unique `(Email, TenantId) WHERE NOT IsDeleted` index |
+| `AppDbContext` | `20260905190009_AddToolManifests` | `ToolManifests` table + filtered unique `(TenantId, ToolName) WHERE NOT IsDeleted` index (`IX_ToolManifests_TenantId_ToolName_OnlyActive`) via raw SQL |
+| `AppDbContext` | `20260907104138_AddMcpConsent` | `McpConsents` (platform-level MCP OAuth grants) |
+| `OpenIddictDbContext` | `20260907104127_AddOpenIddict` | OpenIddict's four store tables |
+
+Migrations auto-apply on startup when `Database:AutoMigrate` is true and the provider is relational; OpenIddict's store migrates separately on the same flag.

@@ -1,26 +1,44 @@
-# Build artifacts
-**/bin/
-**/obj/
-
-# IDE and editor files
-**/.vs/
-**/.vscode/
-**/.idea/
-**/*.suo
-**/*.user
-**/*.sln.docstates
-
-# Git
-.git/
+# Version control
+.git
+.gitattributes
 .gitignore
+.mailmap
 
-# Project management (not needed in Docker)
-project-management/
+# Dependencies / caches (never ship into the image)
+node_modules
+**/node_modules
+.vscode
+.idea
+*.vs
+*.sln.docstates
 
-# OS files
-**/.DS_Store
-**/Thumbs.db
+# Build/test artifacts
+**/bin
+**/obj
+**/packages.lock.json
+*.nupkg
 
-# Logs
-**/*.log
-**/logs/
+# Coverage / reports
+coverage
+coverage.*
+report.*
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+# Docs, project-management, infra, scripts — not needed at runtime
+docs
+project-management
+infra
+scripts
+
+# Local dev tooling / artifacts
+dotnet-tools.json
+*.user
+*.suo
+
+# OS junk
+.DS_Store
+Thumbs.db

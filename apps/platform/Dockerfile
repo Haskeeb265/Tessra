@@ -18,8 +18,13 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 EXPOSE 8080
 
-# Use non-root user for security
-USER app
+# Dev note: the MCP OAuth keys mount (/app/keys) must be writable by the
+# process. On Dev Desktop Linux VM, the named volume gets root ownership,
+# so running as the image's 'app' user fails with EACCES at startup.
+# For dev we keep this as root; harden (custom entrypoint chown, or fixed uid)
+# before any production story.
+#
+# USER app
 
 COPY --from=build /app/publish .
 

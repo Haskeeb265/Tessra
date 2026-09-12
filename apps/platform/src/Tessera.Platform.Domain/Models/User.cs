@@ -33,10 +33,19 @@ public static class ActionCatalog
     public const string DeleteWidget = "delete_widget";
     public const string ManageUsers = "manage_users";
 
+    /// <summary>
+    /// Managing the tenant's MCP tool manifests (create/edit/delete/read).
+    /// The MCP gateway itself reads manifests without this action — it
+    /// resolves tools through the tenant's OAuth-authorized identity, not
+    /// through the dashboard role set (see docs/mcp.md §2.5).
+    /// </summary>
+    public const string ManageTools = "manage_tools";
+
     /// <summary>All known actions, for validation/display purposes.</summary>
     public static readonly string[] All =
     [
-        ViewWidgets, CreateWidget, EditWidget, DeleteWidget, ManageUsers
+        ViewWidgets, CreateWidget, EditWidget, DeleteWidget, ManageUsers,
+        ManageTools
     ];
 }
 

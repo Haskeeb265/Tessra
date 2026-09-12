@@ -1,0 +1,88 @@
+{
+  "tenant_id": "acme-dental",
+  "tools": [
+    {
+      "tool_name": "book_appointment",
+      "description": "Books a dental appointment for a given date/time and service type.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "patient_name": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "time": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+          "service_type": {
+            "type": "string",
+            "enum": ["cleaning", "checkup", "whitening", "fillings"]
+          }
+        },
+        "required": ["patient_name", "date", "time", "service_type"]
+      },
+      "execution": {
+        "type": "http",
+        "method": "POST",
+        "url": "https://api.acmedental.test/v1/appointments",
+        "auth": {
+          "type": "api_key",
+          "credential_ref": "vault://acme-dental/booking-api-key"
+        },
+        "body_template": {
+          "patient": "${patient_name}",
+          "preferred_time": "${date}T${time}:00Z",
+          "service": "${service_type}"
+        },
+        "response_mapping": "$.data.appointment"
+      },
+      "required_scopes": ["appointments:write"],
+      "rate_limit_override": null
+    },
+    {
+      "tool_name": "list_appointments",
+      "description": "Lists the current patient's upcoming appointments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "patient_name": { "type": "string" }
+        },
+        "required": ["patient_name"]
+      },
+      "execution": {
+        "type": "http",
+        "method": "GET",
+        "url": "https://api.acmedental.test/v1/appointments",
+        "auth": {
+          "type": "api_key",
+          "credential_ref": "vault://acme-dental/booking-api-key"
+        },
+        "query_template": {
+          "patient": "${patient_name}"
+        },
+        "response_mapping": "$.data.appointments"
+      },
+      "required_scopes": ["appointments:read"],
+      "rate_limit_override": null
+    },
+    {
+      "tool_name": "cancel_appointment",
+      "description": "Cancels an existing appointment by its ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "appointment_id": { "type": "string" }
+        },
+        "required": ["appointment_id"]
+      },
+      "execution": {
+        "type": "http",
+        "method": "DELETE",
+        "url": "https://api.acmedental.test/v1/appointments/${appointment_id}",
+        "auth": {
+          "type": "api_key",
+          "credential_ref": "vault://acme-dental/booking-api-key"
+        },
+        "response_mapping": "$.data.cancellation"
+      },
+      "required_scopes": ["appointments:write"],
+      "rate_limit_override": null
+    }
+  ]
+}

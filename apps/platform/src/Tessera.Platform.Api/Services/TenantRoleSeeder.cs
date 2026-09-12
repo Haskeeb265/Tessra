@@ -68,7 +68,8 @@ public static class TenantRoleSeeder
                         ActionCatalog.ManageUsers,
                         ActionCatalog.CreateWidget,
                         ActionCatalog.EditWidget,
-                        ActionCatalog.DeleteWidget
+                        ActionCatalog.DeleteWidget,
+                        ActionCatalog.ManageTools
                     ]
                 });
         }

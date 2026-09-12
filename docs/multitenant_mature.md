@@ -1,6 +1,6 @@
 # Tessera — Multitenant Maturity Checklist (Prod Readiness)
 
-> 📐 **Architecture**: see **[`docs/ARCHITECTURE.md`](ARCHITECTURE.md)** — the single source of truth for how the system fits together. This document is a **gap analysis**: everything that must be implemented or hardened before the multitenant platform can be considered production-ready. It supplements the roadmap (`project-management/roadmap.md`), which tracks *planned phases*; this tracks *what's actually missing*.
+> 📐 **Architecture**: see **[`docs/README.md`](README.md)** — the single source of truth for how the system fits together. This document is a **gap analysis**: everything that must be implemented or hardened before the multitenant platform can be considered production-ready. It supplements the roadmap (`project-management/roadmap.md`), which tracks *planned phases*; this tracks *what's actually missing*.
 
 ## How to read this document
 

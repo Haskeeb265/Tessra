@@ -480,3 +480,20 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# --- Local runtime / debug artifacts: never commit ---
+# cloudflared quick-tunnel runtime files. The hostname changes on every run and
+# lands in apps/platform/.env (covered by the `.env` rule above); these two are
+# just the tunnel's log and pidfile.
+.tunnel_url.txt
+.tunnel.pid
+
+# Locally minted OAuth tokens and the ad-hoc helper used while debugging the
+# MCP OAuth flow (see progress.md housekeeping notes).
+access_token.txt
+apps/platform/do_refresh.py
+
+# Credential artifacts produced by manual curl/PKCE debugging.
+final_cookie.txt
+token_resp.json
+pkce.txt

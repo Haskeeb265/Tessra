@@ -1,0 +1,64 @@
+# Single public origin for the MCP OAuth stack (docs/mcp/README.md §13).
+#
+# Everything — authorization server, portal, and MCP gateway — is served from
+# ONE origin because:
+#   * the portal's OAuth calls are deliberately relative
+#     (apps/web/lib/oauth.ts), and
+#   * the interactive cookie must live on the origin where
+#     /connect/authorize runs.
+#
+# The origin is whatever hostname reaches this proxy:
+#   * locally: https://tessera.local (add `127.0.0.1 tessera.local` to your
+#     hosts file and accept Caddy's internal CA), or
+#   * for Claude web: a cloudflared tunnel hostname — see
+#     `scripts/start-claude-web.sh`, which starts the tunnel, writes .env with
+#     ORIGIN=<tunnel url>, and brings the stack up.
+#
+# A catch-all site means the Caddyfile never needs editing when the tunnel
+# hostname changes. TLS is terminated by the tunnel/Cloudflare edge, so this
+# hop stays plain HTTP and no origin certificate has to match the public name.
+
+# TLS ends at the Cloudflare edge / tunnel, so the hop into this proxy is
+# always plain HTTP. Rewrite the forwarded scheme to https on the way to the
+# API: it trusts these headers and uses them to build the public URLs it
+# advertises (issuer, authorization/token endpoints, jwks_uri). Without this
+# they all come out as http://<tunnel>/...
+(tls_hop) {
+	header_up X-Forwarded-Proto https
+}
+
+:80 {
+	encode gzip
+
+	# ---- MCP gateway (python): per-tenant MCP endpoints + RFC 9728 PRM ----
+	# Must share the origin with the AS, because McpOAuth__McpBaseUrl points
+	# here and the token audience is this resource URL.
+	@gateway path /t/* /.well-known/oauth-protected-resource/*
+	handle @gateway {
+		reverse_proxy mcp-gateway:8000 {
+			import tls_hop
+		}
+	}
+
+	# ---- Platform API (OAuth authorization server + platform endpoints) ----
+	# Note /.well-known is split explicitly: openid-configuration and jwks
+	# belong to the AS, oauth-protected-resource belongs to the gateway above.
+	# A blanket /.well-known/* would send one of them to the wrong service.
+	@api path /connect/* /auth/* /tenant/* /admin/* \
+		/tenants /widgets /widgets/* /health /ready /openapi/* \
+		/.well-known/openid-configuration \
+		/.well-known/oauth-authorization-server \
+		/.well-known/jwks
+	handle @api {
+		reverse_proxy api:8080 {
+			import tls_hop
+		}
+	}
+
+	# ---- Next.js portal (login + consent pages live here) ----
+	handle {
+		reverse_proxy host.docker.internal:3000 {
+			import tls_hop
+		}
+	}
+}

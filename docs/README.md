@@ -1,9 +1,19 @@
 # Tessera — Architecture
 
-> **Last verified against the code**: 2026-08-17
+> **Last verified against the code**: 2026-09-08
 > **Read this first.** This document is the single source of truth for how the
-> system fits together. If something here disagrees with what you see in the
-> code, the code is newer — update this file.
+> system fits together. It's a router into the three sub-docs below — it carries
+> the cross-cutting overview (glossary, tech stack, middleware pipeline, isolation
+> layers, API surface, running-it, decisions). The deep-dive for each concern is in
+> its own folder:
+> - **`docs/platform/README.md`** — the C# platform service (auth, data, middleware,
+>   endpoints, MCP OAuth authorization server, ops, tests, gotchas).
+> - **`docs/web/README.md`** — the two Next.js portals (business + superadmin) and the
+>   new `/oauth/*` login + consent pages.
+> - **`docs/mcp/README.md`** — the MCP product model, manifest contract, gateway design,
+>   auth contract, R&D sources, the Acme Dental sample SMB, local run.
+> If something here disagrees with what you see in the code, the code is newer —
+> update this file (and the relevant sub-doc).
 
 ---
 
@@ -45,8 +55,11 @@ Tessera/
 ├── .gitignore                       # dotnet gitignore (+ .env)
 ├── readme.md                        # Repo scaffolding checklist (roadmap for the repo itself)
 ├── docs/
-│   ├── ARCHITECTURE.md              # ← you are here (single source of truth)
-│   └── TABLES.md                    # database schema reference — every table, column, index
+│   ├── README.md              # ← you are here (single source of truth; points at the three sub-docs below)
+│   ├── TABLES.md                    # database schema reference — every table, column, index
+│   ├── platform/README.md           # platform service engineering reference (C#: auth, data, middleware, endpoints, MCP OAuth AS, ops)
+│   ├── web/README.md                # web portals engineering reference (business + superadmin portals, OAuth pages)
+│   └── mcp/README.md                # MCP product model, architecture, auth contract, R&D, sample SMB, local run
 ├── project-management/              # roadmap · tasks · decisions · learning-log · progress
 ├── infra/                           # placeholder (cloud provisioning — not yet used)
 ├── scripts/                         # placeholder (not yet used)
@@ -81,7 +94,7 @@ These are the concepts that have caused confusion before. Get them right.
 | **Envelope** | A bundle of **roles + their actions**, created by a superadmin and assigned to a tenant. **Template** semantics: assigning an envelope *copies* its roles into the tenant's own role set; later envelope edits don't cascade. |
 | **AppRole** | A role **inside an envelope** (`Envelopes 1—n AppRoles`) — the template definition. Has a `Name` and an `Actions` list (`text[]`). |
 | **TenantRole** | A **tenant-owned copy** of a template role (`TenantRoles` table). Tenants CRUD these and assign them to users via `User.RoleId`. Copy happens at assignment; no auto-sync. |
-| **Action** | A named Tessera capability (e.g. `view_widgets`, `create_widget`, `edit_widget`, `delete_widget`, `manage_users`). **Enforced server-side** by `ActionChecks` (see §12). |
+| **Action** | A named Tessera capability (e.g. `view_widgets`, `create_widget`, `edit_widget`, `delete_widget`, `manage_users`, `manage_tools`). **Enforced server-side** by `ActionChecks` (see §12). |
 | **User** | A tenant-scoped user (`Users` table): bcrypt-hashed password, `RoleId` (FK → `TenantRoles`), `TenantId`. Auth via `/auth/*`. |
 | **AdminUser** | A **platform-level superadmin** (`AdminUsers` table): no tenant binding, bcrypt hash. Auth via `/admin/auth/login`. `admin@…` (tenant) vs `superadmin@…` (platform) are **different tables and accounts**. |
 | **Roles constants** | Built-ins in `User.cs`: `Admin`, `User`, `SuperAdmin`. Only `SuperAdmin` is used as a claim-based policy (`SuperAdminOnly`); tenant authorization is **action-based**, not name-based. |
@@ -99,15 +112,21 @@ These are the concepts that have caused confusion before. Get them right.
 | Backend runtime | .NET (ASP.NET Core, minimal APIs) | `net10.0` / SDK 10.0.302 |
 | ORM | EF Core (`Microsoft.EntityFrameworkCore`) + Npgsql | 10.0.10 / 10.0.0 |
 | Multi-tenancy | **Finbuckle.MultiTenant** (+ AspNetCore + EntityFrameworkCore + Abstractions) | 10.1.2 |
-| Auth | JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`), BCrypt (`BCrypt.Net-Next`) | 10.0.10 / 4.0.3 |
+| Auth (first-party) | JWT (`Microsoft.AspNetCore.Authentication.JwtBearer`), BCrypt (`BCrypt.Net-Next`) | 10.0.10 / 4.0.3 |
+| Auth (MCP OAuth) | **OpenIddict 7.7** (authorization server inside the C# host) | 7.7.0 |
 | Logging | Serilog (console sink) | 10.0.0 |
 | Database (prod/dev) | PostgreSQL | 16 (`postgres:16-alpine`) |
 | Database (fallback dev) | EF Core InMemory provider | 10.0.10 |
 | Frontends | Next.js (App Router, Turbopack) · React · TypeScript strict · Tailwind CSS v4 | 16.3.0 / 19.2.8 / 5 / 4 |
+| MCP gateway (target, not built yet) | Python (official MCP SDK v2 `mcp>=2`) | — |
 
 ---
 
 ## 5. The platform service (`apps/platform`)
+
+The platform service is documented in depth in **[`docs/platform/README.md`](platform/README.md)**
+(architecture, auth, data model, middleware pipeline, endpoints, MCP OAuth AS, running-it,
+tests, known issues, decisions). What follows is the cross-cutting overview only.
 
 ### 5.1 Project structure
 
@@ -126,10 +145,10 @@ flowchart LR
 > 📄 **Full table-by-table reference** (columns, types, indexes, FKs): see
 > **[`docs/TABLES.md`](TABLES.md)**.
 
-Nine tables. Tenant-scoped tables (`Users`, `Widgets`, `RefreshTokens`, `TenantRoles`, `Invitations`) carry a
+Eleven application tables across two EF contexts. Tenant-scoped tables (`Users`, `Widgets`, `RefreshTokens`, `TenantRoles`, `Invitations`, `ToolManifests`) carry a
 `TenantId` and are marked `IsMultiTenant()` → Finbuckle adds a global query
-filter. Platform-level tables (`Tenants`, `Envelopes`, `AppRoles`, `AdminUsers`)
-are **not** multi-tenant.
+filter. Platform-level tables (`Tenants`, `Envelopes`, `AppRoles`, `AdminUsers`, `McpConsents`)
+are **not** multi-tenant. OpenIddict's own store (`OpenIddictApplications`, `Authorizations`, `Tokens`, `Scopes`) lives in a separate non-tenant `OpenIddictDbContext`.
 
 ```mermaid
 erDiagram
@@ -143,6 +162,26 @@ erDiagram
     User ||--o{ RefreshToken : "issued to"
     Tenant ||--o{ Invitation : "sent"
     Invitation }o--|| TenantRole : "grants"
+    Tenant ||--o{ ToolManifest : "owns"
+    ToolManifest {
+        guid Id PK
+        string TenantId "multi-tenant filter"
+        string ToolName "unique among active, per tenant"
+        string Description
+        string InputSchema "JSON Schema (JSON text)"
+        string Execution "JSON object"
+        string RequiredScopes "text[] — per-tool scopes"
+        string RateLimitOverride
+        bool IsDeleted "soft delete"
+        datetime CreatedAt
+    }
+    McpConsent {
+        guid Id PK
+        guid UserId "the tenant-scoped User that granted"
+        string TenantId "denormalized"
+        string ClientId "OpenIddict client_id"
+        string ScopesJson "granted scopes as JSON array"
+    }
 
     Tenant {
         string Id PK "internal key, e.g. 'alpha'"
@@ -225,7 +264,9 @@ erDiagram
 - **Delete tenant** → hard-deletes the tenant's `Widgets`, `RefreshTokens`, and `Invitations`; **soft-deletes** its `Users` (`IsDeleted`, `RoleId = NULL`) and the `Tenant` row itself (B1/B4). PostgreSQL uses raw SQL (bypasses `EnforceMultiTenant`); InMemory uses `MultiTenantDbContext.Create<TContext,TTenantInfo>` bound to the deleted tenant.
 - **Delete envelope** → first **unassigns** it from all tenants (`Tenant.EnvelopeId = null`), then deletes the envelope and its roles (cascade). Tenant role copies are untouched.
 
-Migrations: a single `InitialCreate` migration holds the entire current schema (the dev migration history was squashed). Applied on startup gated by `Database:AutoMigrate` and `IsRelational()`.
+The new MCP tables are covered in full (`docs/platform/README.md` §7 + `docs/TABLES.md`): `ToolManifests` (tenant-scoped, filtered unique `(TenantId, ToolName) WHERE NOT IsDeleted`), `McpConsents` (platform-level), and OpenIddict's store tables.
+
+Migrations: the `AppDbContext` history is `InitialCreate` → `20260905190009_AddToolManifests` → `20260907104138_AddMcpConsent`; OpenIddict has its own `OpenIddictDbContext` migration `20260907104127_AddOpenIddict`. Applied on startup gated by `Database:AutoMigrate` and `IsRelational()`.
 
 ### 5.3 Middleware pipeline (exact order)
 
@@ -255,9 +296,9 @@ flowchart LR
 | 2 | `RequestLoggingMiddleware` (Observability) | Logs method, path, status, duration for every request. | — |
 | 3 | CORS `WebApp` | Origins come from `Cors:AllowedOrigins` (defaults: `http(s)://localhost:3000` and `:3001`). Runs **before** tenant validation so browser preflights (OPTIONS, no custom headers) aren't rejected. | — |
 | 4 | `UseRateLimiter()` | Fixed-window per-IP rate limiter on `/auth/*` endpoints (C4). Limits live in `RateLimiting:*`; 429 when exceeded. | **429** |
-| 5 | `TenantValidationMiddleware` | Requires `X-Tenant-Id` header on all paths **except** `/health`, `/ready`, `/openapi`, `/admin`, `/tenants`. | **400** (missing header) |
+| 5 | `TenantValidationMiddleware` | Requires `X-Tenant-Id` header on all paths **except** `/health`, `/ready`, `/openapi`, `/admin`, `/tenants`, `/connect`, `/.well-known`. | **400** (missing header) |
 | 6 | `UseMultiTenant()` | Finbuckle: resolves the tenant from the header via the **`DbTenantStore`** and sets the per-request tenant context. | 500 if store fails |
-| 7 | `TenantSuspensionMiddleware` | Blocks tenant-scoped requests when the resolved tenant's `Status` is `Suspended` (B3). Platform paths are exempt even with a stray header. | **403** (suspended) |
+| 7 | `TenantSuspensionMiddleware` | Blocks tenant-scoped requests when the resolved tenant's `Status` is `Suspended` (B3). Platform paths **and** `/connect` + `/.well-known` are exempt (OAuth handlers enforce suspension from the `resource` tenant instead). | **403** (suspended) |
 | 8 | `UseAuthentication()` | Validates the Bearer JWT (issuer, audience, lifetime, HMAC-SHA256 signature, zero clock skew). | **401** (missing/invalid token) |
 | 9 | `TenantClaimValidationMiddleware` | For authenticated requests: compares the JWT's **`tenant_identifier`** claim to the `X-Tenant-Id` header. Blocks cross-tenant token reuse. Superadmin JWTs have no tenant claim → skipped. | **403** (mismatch) |
 | 10 | `TokenVersionValidationMiddleware` | For authenticated requests: compares the JWT's **`token_version`** claim to the user's current `TokenVersion` (A5). Demoted/deleted users lose access immediately. Superadmin JWTs carry no claim → skipped; auth/recovery endpoints (`/auth/login`, `/auth/refresh`, …) are exempt. | **401** (stale token) |
@@ -401,98 +442,24 @@ flowchart TD
 All tenant-scoped endpoints require `X-Tenant-Id`. All responses use JSON.
 Errors use `ApiErrorResponse` (see §11).
 
-| Method | Path | Tenant header | Auth | Purpose |
-|---|---|---|---|---|
-| GET | `/health` | no | public | Liveness: `{ status: "healthy", timestamp }` (HealthBadge) |
-| GET | `/ready` | no | public | Readiness: checks DB (`CanConnectAsync`), 503 when unreachable |
-| GET | `/tenants` | no | public | `[{ id: identifier, name }]` for the workspace picker (non-deleted only) |
-| GET | `/openapi` | no | public | OpenAPI JSON (dev only) |
-| POST | `/auth/register` | **yes** | public | Redeem an invitation (invite-only): validates the emailed token (email match, unused, unexpired) and creates the user with the invite's role. The platform bootstrap invite grants Superadmin. Rate-limited |
-| POST | `/auth/login` | **yes** | public | Verify credentials → token pair, or `{ mfaRequired, mfaToken }` when MFA is enabled. Generic errors (C3). Rate-limited |
-| POST | `/auth/mfa` | **yes** | public | Complete MFA login with TOTP `code` → token pair. Rate-limited |
-| POST | `/auth/refresh` | **yes** | public | Rotate refresh token → new pair; replay of a used token revokes the family (C1). Rate-limited |
-| POST | `/auth/logout` | **yes** | public | Server-side revoke of the presented refresh token's family. Rate-limited |
-| POST | `/auth/change-password` | yes | tenant user | Change password; bumps `token_version`, revokes all sessions |
-| POST | `/auth/forgot-password` | **yes** | public | Email a reset link (message-only reply). Rate-limited |
-| POST | `/auth/reset-password` | **yes** | public | Set a new password with the emailed token. Rate-limited |
-| POST | `/auth/verify-email` | **yes** | public | Verify an email address with the emailed token (C2). Rate-limited |
-| POST | `/auth/mfa/enroll` | yes | tenant user | Generate a TOTP secret + otpauth URI |
-| POST | `/auth/mfa/verify` | yes | tenant user | Confirm a code → enable MFA (bumps `token_version`) |
-| POST | `/auth/mfa/disable` | yes | tenant user | Disable MFA with a current code |
-| POST | `/auth/promote` | yes | `manage_users` | Legacy: set a user's role to Admin |
-| GET | `/widgets` | yes | `view_widgets` | List tenant's widgets (filtered) |
-| GET | `/widgets/{id:guid}` | yes | `view_widgets` | Get one widget |
-| POST | `/widgets` | yes | `create_widget` | Create widget |
-| PUT | `/widgets/{id:guid}` | yes | `edit_widget` | Update widget |
-| DELETE | `/widgets/{id:guid}` | yes | `delete_widget` | Delete widget |
-| GET | `/tenant/me` | yes | tenant user | `{ id, email, role, roleId, actions[], tenantId, tenantIdentifier }` — actions resolved live from `RoleId` |
-| GET | `/tenant/envelope` | yes | tenant user | The workspace's role set (kept as "envelope" for backward compatibility) |
-| GET/POST | `/tenant/roles` | yes | list: any · write: `manage_users` | List / create tenant roles (actions validated against `ActionCatalog`) |
-| PUT/DELETE | `/tenant/roles/{id:guid}` | yes | `manage_users` | Update / delete a role; delete is **blocked while users are assigned** (400) |
-| GET/POST | `/tenant/invites` | yes | `manage_users` | List / create role-bound invitations (emailed link, 72 h, single-use) |
-| GET | `/tenant/users` | yes | `manage_users` | List workspace users (no password hash) |
-| POST | `/tenant/users` | yes | `manage_users` | Add user `{ email, password, role }` — role must exist in the tenant's role set |
-| PUT | `/tenant/users/{id:guid}` | yes | `manage_users` | Change a user's role (cannot change your own; bumps `token_version`, revokes sessions) |
-| DELETE | `/tenant/users/{id:guid}` | yes | `manage_users` | Remove a user (cannot remove yourself; soft delete) |
-| POST | `/admin/auth/login` | no | public | Superadmin login → `SuperAdmin` JWT (4 h) |
-| GET/POST | `/admin/tenants` | no | `SuperAdminOnly` | List / create tenants (envelope assignment copies template roles into `TenantRoles`) |
-| POST | `/admin/tenants/{id}/invites` | no | `SuperAdminOnly` | Send the single workspace Superadmin bootstrap invite; rejected once a live or pending owner exists |
-| PUT/DELETE | `/admin/tenants/{id}` | no | `SuperAdminOnly` | Update / delete tenant (delete hard-deletes widgets/tokens/invites, soft-deletes users + tenant) |
-| PUT | `/admin/tenants/{id}/status` | no | `SuperAdminOnly` | Suspend / reactivate a tenant (`Active` / `Suspended`) |
-| GET/POST | `/admin/envelopes` | no | `SuperAdminOnly` | List / create envelope templates (roles + actions) |
-| PUT/DELETE | `/admin/envelopes/{id:guid}` | no | `SuperAdminOnly` | Update / delete envelope (delete unassigns tenants first; tenant role copies untouched) |
+> The full endpoint surface — every path, auth model, and guard — lives in
+> **[`docs/platform/README.md`](platform/README.md)** §8 (it's too large to-maintain in prose here).
+> The portal routes, `lib/api.ts` differences, and the new `/oauth/*` OAuth pages
+> live in **[`docs/web/README.md`](web/README.md)**.
 
-**Guards worth knowing** (return 400 `{ error }`):
-- Tenant identifier must match `^[a-z0-9-]+$` and be unique.
-- Envelope must have ≥ 1 role; role names unique within the envelope.
-- Role names unique per tenant; actions must come from `ActionCatalog`.
-- `POST /tenant/users` validates email format, password ≥ 8 chars, role exists in the workspace.
-
----
-
-## 8. Business portal (`apps/web`) — :3000
-
-Next.js 16 App Router, TypeScript strict, Tailwind v4, coffee theme
-(`globals.css` defines the `cream/beige/latte/caramel/mocha/roast/espresso`
-palette).
-
-| Route | File | Purpose |
-|---|---|---|
-| `/` | `app/page.tsx` | Landing page with `HealthBadge` (polls `GET /health`) + login/register CTAs |
-| `/login` | `app/login/page.tsx` | Workspace login (tenant picker + credentials; TOTP code step when MFA is enabled) |
-| `/register` | `app/register/page.tsx` | Workspace signup; reads the `?invite=` token from the email link to prefill email and redeem the invite |
-| `/dashboard` | `app/dashboard/page.tsx` | Widget CRUD + role badge + "your role allows" action pills (`GET /tenant/me`) |
-| `/dashboard/users` | `app/dashboard/users/page.tsx` | **Team** (Admin-only UI): list users, add user (role from envelope), change role, remove |
-
-Shared pieces:
-- `lib/api.ts` — single API client. Sends `X-Tenant-Id` on every call, reads tokens from `localStorage["tessera.auth"]`, decodes the JWT role (`roleFromToken`), and **auto-refreshes on 401** (retry once via `POST /auth/refresh`). `getTenants()` populates the workspace picker dynamically with a built-in fallback (`TENANTS`).
-- `components/ui.tsx` — `Button`, `Card`, `Field`, `TextInput`, `TextArea`, `Alert`.
-- `components/portal-header.tsx` — brand + nav (Widgets / Team) + user info + logout.
-- `components/tenant-picker.tsx` — workspace `<select>` fed by `GET /tenants`.
-- `components/health-badge.tsx` — "API online/offline" indicator.
-
----
-
-## 9. Platform portal (`apps/platform-portal`) — :3001
-
-Same stack/theme as the business portal, but for superadmins.
-
-| Route | File | Purpose |
-|---|---|---|
-| `/` | `app/page.tsx` | Redirects to `/tenants` (logged in) or `/login` |
-| `/login` | `app/login/page.tsx` | Superadmin login |
-| `/tenants` | `app/tenants/page.tsx` | List/create/edit/delete tenants, assign envelope |
-| `/envelopes` | `app/envelopes/page.tsx` | List/create/edit/delete envelopes; role + comma-separated actions editor |
-
-`lib/api.ts` differs from the business portal: **no `X-Tenant-Id` header**,
-tokens in `localStorage["tessera.admin"]`, and **no auto-refresh** (12 h token;
-on 401 the pages redirect to `/login`).
+Key corrections to earlier prose (code is authoritative):
+- `/health`, `/ready`, `/openapi`, `/admin`, `/tenants`, `/connect`, `/.well-known` are all **exempt** from `TenantValidationMiddleware` and `TenantSuspensionMiddleware` (the middleware tables in §5.3 reflect the code).
+- Superadmin access tokens live **4 hours** (`Jwt:AdminAccessTokenExpirationHours`), not 12h.
+- The platform now also serves the **MCP OAuth authorization server** on `/connect/*` +
+  `/.well-known/openid-configuration` (OpenIddict 7.7) — the full story, incl. tenant-
+  from-resource binding, login/consent portal pages, and Caddy TLS, is in
+  **[`docs/platform/README.md`](platform/README.md)** §6 and **[`docs/mcp/README.md`](mcp/README.md)**.
 
 ---
 
 ## 10. Running it
 
-### 10.1 Docker Compose (the canonical way — PostgreSQL)
+### 10.1 Docker Compose — plain HTTP (dashboards only; OAuth needs §10.4)
 
 ```mermaid
 flowchart LR
@@ -541,13 +508,55 @@ and behavior differs slightly (see gotchas).
 | Superadmin `superadmin@tessera.com` / `Admin123!` (`AdminUsers`) | ✅ | ✅ | `SeedPlatformDataAsync` |
 | Tenant admin `admin@tessera.com` / `Admin123!` per tenant (`Users`, Admin role) | ❌ | ✅ | Raw SQL in `Program.cs` (Postgres only — see gotcha #4) |
 | Tenant `Superadmin` system role (all actions, `IsSystem`) | ✅ (lazily on first invite) | ✅ | `TenantRoleSeeder.EnsureSuperadmin` + raw SQL / migration backfill |
+| `acme-dental` tenant (sample SMB fixture) | ✅ | ✅ | `SeedPlatformDataAsync` (idempotent) |
+| Acme Dental manifests (3: book_appointment, cancel_appointment, list_appointments) | ✅ | ✅ | `SampleSmbSeeder.SeedAcmeDentalAsync` |
+| MCP dev OAuth client `tessera-local-dev` | ✅ | ✅ | `SeedMcpOAuthApplicationsAsync` |
 
 Config lives in `appsettings.json` (`SeedAdmin`, `SeedSuperAdmin`, `Jwt`
 issuer/audience/expiries, `Cors:AllowedOrigins`, `RateLimiting:*`, `Database:AutoMigrate`)
-plus `appsettings.Development.json` (dev `Jwt:SecretKey`). Production sets
-`Jwt__SecretKey` (startup fails fast if unset — C5) and overrides the
-connection string via `ConnectionStrings__DefaultConnection`; the Docker
-environment does the latter through `appsettings.Docker.json`.
+plus `appsettings.Development.json` (dev `Jwt:SecretKey`) + `appsettings.Docker.json`
+(connection string via env `ConnectionStrings__DefaultConnection`, OAuth env `McpOAuth__*`).
+Production sets `Jwt__SecretKey` (startup fails fast if unset — C5). Docker also sets
+`McpOAuth__Issuer=https://tessera.local`, `McpOAuth__PortalBaseUrl`,
+`McpOAuth__McpBaseUrl`, and mounts `oauth-keys` for persistent signing/encryption keys.
+
+---
+
+### 10.4 Docker Compose with Caddy TLS (the canonical way — OAuth requires it)
+
+The OAuth stack requires HTTPS, so the canonical local run includes a Caddy
+reverse proxy on `https://tessera.local` in compose:
+
+```mermaid
+flowchart LR
+    subgraph localhost
+        W["apps/web :3000 · OAuth pages under https://tessera.local/oauth/*<br/>NEXT_PUBLIC_API_URL=http://localhost:5000"] --> C
+        P["apps/platform-portal :3001 · NEXT_PUBLIC_API_URL=http://localhost:5000"] --> C
+    end
+    subgraph compose["docker compose (apps/platform)"]
+        C["caddy :443 → tessera.local<br/>TLS terminator (internal CA)"]
+        C --> API["api :5000 → container :8080<br/>ASPNETCORE_ENVIRONMENT=Docker"]
+        API --> DB[("db postgres:16 :5432<br/>database tessera_platform")]
+    end
+```
+
+The OAuth flow requires one TLS origin: Caddy serves `https://tessera.local` — API
+paths (`/connect/*`, `/.well-known/*`, `/auth/*`, …) proxy to the platform
+container, everything else (`/oauth/*`) proxies to the Next.js dev server on the
+host (`host.docker.internal:3000`), so the `/oauth/*` pages are same-origin with
+the AS and the OAuth cookie flows. Dashboard API calls still go to
+`NEXT_PUBLIC_API_URL` (`http://localhost:5000` today) and hit CORS
+`localhost:3000/:3001` origins.
+
+```bash
+cd apps/platform
+docker compose up -d --build    # builds .NET image, starts api + db + caddy
+```
+
+One-time host setup: add `127.0.0.1 tessera.local` to `/etc/hosts` (or
+`C:\Windows\System32\drivers\etc\hosts`). Caddy uses an internal CA — browsers
+accept the dev warning once; scripted clients pass `--cacert` from the
+`apps/platform/caddy-data` volume. Full steps in [`docs/mcp/README.md`](mcp/README.md) §13.
 
 ---
 
@@ -617,8 +626,8 @@ deliberately at startup.
 | # | Finding | Where it lives |
 |---|---|---|
 | F15 | `Guide.md`'s curl quick-test registers **without an invite** (400s against the invite-only flow) and still says "first user becomes Admin"; its register-page "prefills email" claim is also wrong | `apps/platform/Guide.md` |
-| F16 | `docs/mcp.md` §6 + `readme.md` reference a `Tessera.Platform.RateLimiting` project / "RateLimiting module" that **doesn't exist** — the solution has only Api/Domain/Observability/Tests; rate limiting is inline in `Program.cs` | `docs/mcp.md`, `readme.md` |
-| F17 | This file drifts from code: §5.3 lists `/ready` as exempt from `TenantValidationMiddleware` (code doesn't exempt it → 400 without a header) and §6.1/§6.3 say the admin token lasts 12 h (effective: **4 h**, `Jwt:AdminAccessTokenExpirationHours`) | `docs/ARCHITECTURE.md` §5.3, §6.1, §6.3 |
+| F16 | `readme.md` referenced a `Tessera.Platform.RateLimiting` project / "RateLimiting module" that **doesn't exist** — the solution has only Api/Domain/Observability/Tests; rate limiting is inline in `Program.cs` | `readme.md` |
+| F17 | This file used to drift from code: §5.x listed `/ready` as exempt from `TenantValidationMiddleware` (code returned 400 without a header) and §6.x said the admin token lasted 12 h (effective: **4 h**, `Jwt:AdminAccessTokenExpirationHours`). Both are fixed now; the middleware table in §5.3 and §6 reflect the code.
 | F18 | Cosmetic: platform portal's `Alert` lacks a `success` kind; `HealthBadge` sends a stray default `X-Tenant-Id` to `/health` (harmless); register page state flash | `apps/web`, `apps/platform-portal` |
 
 ---
@@ -655,11 +664,22 @@ Read these before changing anything. Each one caused a real bug or confusion.
 - **Monorepo**: all apps + platform in one repo.
 - **Tenant onboarding**: invite-only. The platform sends one workspace-owner bootstrap invite; that invite redeems into the platform-managed Superadmin role. The Superadmin creates Admins, who invite members.
 - **Actions**: enforced server-side via `ActionChecks`; the envelope is a template copied into tenant-owned roles (no cascade).
+- **MCP stack**: C# = system of record; Python = thin MCP gateway (protocol adapter only, no business logic, no direct DB access); Next.js = admin dashboard + end-user login/consent pages.
+- **MCP tool manifests**: `ToolManifests` is a tenant-scoped `IsMultiTenant()` entity; slots into existing action-based authz as `manage_tools`.
+- **MCP tenant addressing**: path-based v1 (`https://…/t/{tenant-slug}/mcp`).
+- **MCP OAuth AS**: OpenIddict 7.7 inside the C# host (build it ourselves — no hosted-AS fallback). Login/consent pages live in the Next.js portal. Access tokens are **signed RS256 JWTs** (JWS, `at+jwt`, kid `mcp-signing-v1`) published at `/.well-known/jwks` — live via `options.DisableAccessTokenEncryption()`; refresh tokens stay encrypted. CIMD client registration + Python `TokenVerifier` remain deferred.
+- **MCP OAuth scopes**: coarse per-tenant `tools` + `offline_access` for v1.
+- **MCP credential vault**: v1 encrypted-at-rest DB columns (AES-GCM, env-var master key); KMS later.
+- **MCP gateway repo home**: `apps/mcp-server` (not `services/mcp-gateway` as earlier docs said).
+- **MCP local TLS**: Caddy reverse proxy in compose on `https://tessera.local`.
+- **MCP auth sequencing**: build gateway with auth seams from day one (stub token verifier); do OAuth spike early; don't build hosted-assistant connectivity (ChatGPT) until Business/Edu plan + public HTTPS.
 
 ---
 
-## 16. Where to go next (see `project-management/roadmap.md`)
+## 16. Where to go next
 
-1. **Observability** (Phase 4) — correlation IDs across C#/TS, structured log conventions in `Tessera.Platform.Observability`.
-2. **CI pipeline** (Phase 7) — GitHub Actions split by path (ci-web / ci-platform / ci-infra).
-3. **Deploy** — Fly.io + PostgreSQL, secrets management, dev container, onboarding doc.
+1. **MCP gateway core** (`apps/mcp-server`, not scaffolded yet) — manifest-driven tools + HTTP executor against the local Acme Dental stub; tested authless via MCP Inspector + Claude Code on localhost. See **[`docs/mcp/README.md`](mcp/README.md)** §16 (implementation phases) and §6 (target code structure).
+2. **MCP OAuth hardening** — CIMD client registration (fetch/cache client metadata, redirect-URI validation) + the Python gateway `TokenVerifier` (the AS already issues signed RS256 JWTs + serves `/.well-known/jwks`). See **[`docs/platform/README.md`](platform/README.md)** §6.5 and **[`docs/mcp/README.md`](mcp/README.md)** §8.
+3. **Observability** (Phase 4) — correlation IDs across C#/TS, structured log conventions in `Tessera.Platform.Observability`.
+4. **CI pipeline** (Phase 7) — GitHub Actions split by path (ci-web / ci-platform / ci-infra).
+5. **Deploy** — Fly.io + PostgreSQL, secrets management, dev container, onboarding doc.

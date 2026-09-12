@@ -1,0 +1,35 @@
+{
+  "tenant_id": "acme-dental",
+  "tool_name": "book_appointment",
+  "description": "Books a dental appointment for a given date/time and service type.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "patient_name": { "type": "string" },
+      "date": { "type": "string", "format": "date" },
+      "time": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      "service_type": {
+        "type": "string",
+        "enum": ["cleaning", "checkup", "whitening", "fillings"]
+      }
+    },
+    "required": ["patient_name", "date", "time", "service_type"]
+  },
+  "execution": {
+    "type": "http",
+    "method": "POST",
+    "url": "https://api.acmedental.test/v1/appointments",
+    "auth": {
+      "type": "api_key",
+      "credential_ref": "vault://acme-dental/booking-api-key"
+    },
+    "body_template": {
+      "patient": "${patient_name}",
+      "preferred_time": "${date}T${time}:00Z",
+      "service": "${service_type}"
+    },
+    "response_mapping": "$.data.appointment"
+  },
+  "required_scopes": ["appointments:write"],
+  "rate_limit_override": null
+}

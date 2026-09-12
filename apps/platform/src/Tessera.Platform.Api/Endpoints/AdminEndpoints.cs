@@ -155,6 +155,44 @@ public static class AdminEndpoints
             .WithName("AdminCreateTenant");
 
         // ------------------------------------------------------------
+        // Get Tenant by Id or Identifier
+        // ------------------------------------------------------------
+
+        tenants.MapGet(
+            "/{id}",
+            async (string id, AppDbContext db) =>
+            {
+                var tenant = await db.Tenants
+                    .AsNoTracking()
+                    .Where(t => !t.IsDeleted)
+                    .FirstOrDefaultAsync(t => t.Id == id || t.Identifier == id);
+
+                if (tenant is null)
+                {
+                    return Results.NotFound();
+                }
+
+                return Results.Ok(new
+                {
+                    tenant.Id,
+                    tenant.Identifier,
+                    tenant.Name,
+                    tenant.EnvelopeId,
+
+                    EnvelopeName = tenant.EnvelopeId == null
+                        ? null
+                        : db.Envelopes
+                            .Where(e => e.Id == tenant.EnvelopeId)
+                            .Select(e => e.Name)
+                            .FirstOrDefault(),
+
+                    tenant.Status,
+                    tenant.CreatedAt
+                });
+            })
+            .WithName("AdminGetTenant");
+
+        // ------------------------------------------------------------
         // Update Tenant
         // ------------------------------------------------------------
 
